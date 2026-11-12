@@ -42,7 +42,7 @@ print(f"Running on: {device} | PyTorch version: {torch.__version__}")
 plt.style.use('seaborn-v0_8-whitegrid' if 'seaborn-v0_8-whitegrid' in plt.style.available else 'default')""")
 
     # Cell 2: Core DisNet Data Structures
-    md("""## 1. Khung Cấu trúc Dữ liệu gốc của DisNet (Tương thích 1-1 với DisjunctiveNet.jl)
+    md(r"""## 1. Khung Cấu trúc Dữ liệu gốc của DisNet (Tương thích 1-1 với DisjunctiveNet.jl)
 Bao gồm:
 - `LinearConstraint(a, sense, b)`: Ràng buộc tuyến tính phẳng ($a^T y \le b$, $\ge$, $==$)
 - `Disjunction(disjuncts, name)`: Mệnh đề tuyển chứa các luật HOẶC
@@ -242,6 +242,12 @@ class SAGEProjectionLayer(nn.Module):
         self.n_branches = len(self.branches)
         self.rho = rho
         self.n_samples = n_samples
+
+    def forward(self, z: Tensor) -> Tensor:
+        \"\"\"Forward projection onto nearest feasible DNF branch.\"\"\"
+        dists = torch.stack([b.distance(z) for b in self.branches])
+        k_star = int(torch.argmin(dists).item())
+        return self.branches[k_star].project_fast(z)
 
     def compute_sage_gradient(self, z: Tensor, y_gt: Tensor, loss_fn: Callable):
         dists = torch.stack([b.distance(z) for b in self.branches])

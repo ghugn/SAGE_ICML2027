@@ -62,6 +62,9 @@ def run_smoketest(epochs: int = 5, lr: float = 0.02):
     x = torch.tensor([0.2, 0.7, 0.4])
     target = torch.tensor([0.85, 0.15])
     loss_fn = lambda a, b: 0.5 * (a - b).pow(2).sum()
+    with torch.no_grad():
+        init_out = model(x)
+    assert init_out.shape == target.shape, "Shape mismatch in model forward!"
     print("PASS")
 
     # 4. Run Training Epochs
@@ -78,6 +81,11 @@ def run_smoketest(epochs: int = 5, lr: float = 0.02):
         optimizer.step()
         cert_str = "YES" if info["certified"] else "NO"
         print(f"   Epoch {ep:2d}/{epochs:2d} | Loss: {loss.item():.6f} | Branch: {k_curr} | Certified: {cert_str}")
+
+    with torch.no_grad():
+        final_out = model(x)
+    assert final_out.sum().item() >= 0.799, "Final output violates global constraint!"
+    print(f"   Final Feasible Prediction: {final_out.tolist()} (sum={final_out.sum().item():.3f})")
 
     elapsed = time.time() - t0
     print(f"\nCompleted in {elapsed:.3f}s ({elapsed/epochs*1000:.1f}ms/epoch)")
