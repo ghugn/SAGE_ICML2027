@@ -72,17 +72,13 @@ class _BranchProjectFn(torch.autograd.Function):
         device = z.device
         dtype = z.dtype
 
-        # Gradient flow matching DisNet QP regularization backward:
-        # Allows gradient to pull z back towards the feasible region when target is interior
         grad_z = grad_output.clone()
 
-        # If linear inequality constraint A y <= b is active: project onto feasible subspace
         if branch.A.shape[0] > 0:
             A = branch.A.to(device, dtype)
             b = branch.b.to(device, dtype)
             viol = torch.abs(A @ y_star - b)
             active = (viol < 1e-3)
-            # Only constrain if gradient pushes against the active boundary
             if active.any():
                 A_act = A[active]
                 push_outward = (A_act @ grad_z < 0)
@@ -111,37 +107,50 @@ class PolyhedralBranch:
         self.is_pure_box = (A.shape[0] == 0) and (not torch.isinf(self.lo).any()) and (not torch.isinf(self.hi).any())
 
     def _solve_projection(self, z: Tensor) -> Tensor:
-        """Internal solver for Euclidean projection."""
+        """Exact Euclidean projection using bisection on KKT multiplier for single inequality
+        or Accelerated PGD for multiple inequalities.
+        """
         lo = self.lo.to(z.device, z.dtype)
         hi = self.hi.to(z.device, z.dtype)
 
-        if self.is_pure_box:
+        if self.is_pure_box or self.A.shape[0] == 0:
             return torch.clamp(z, lo, hi)
 
         y = torch.clamp(z, lo, hi)
-        if self.A.shape[0] == 0:
-            return y
-
         A = self.A.to(z.device, z.dtype)
         b = self.b.to(z.device, z.dtype)
 
         if torch.all(A @ y <= b + 1e-6):
             return y
 
-        # Fast Accelerated Projected Gradient (PGD)
+        # Exact bisection on Lagrange multiplier for single linear inequality (e.g. y1 + y2 >= 0.8)
+        if A.shape[0] == 1:
+            A_row = A[0]
+            b_val = b[0]
+            lam_lo, lam_hi = 0.0, 50.0
+            for _ in range(30):
+                lam_mid = 0.5 * (lam_lo + lam_hi)
+                y_cand = torch.clamp(z - lam_mid * A_row, lo, hi)
+                if (A_row @ y_cand).item() > b_val.item():
+                    lam_lo = lam_mid
+                else:
+                    lam_hi = lam_mid
+            return torch.clamp(z - lam_hi * A_row, lo, hi)
+
+        # Accelerated PGD for multiple inequalities
         y_cur = y.clone()
         y_prev = y.clone()
         step_size = 0.1 / (torch.norm(A, p=2) ** 2 + 1e-4).item()
 
-        for k in range(50):
+        for k in range(100):
             beta = (k - 1) / (k + 2) if k > 0 else 0.0
             v = y_cur + beta * (y_cur - y_prev)
             viol = torch.clamp(A @ v - b, min=0.0)
-            grad = (v - z) + 2e2 * (A.T @ viol)
+            grad = (v - z) + 1e3 * (A.T @ viol)
             y_next = torch.clamp(v - step_size * grad, lo, hi)
             y_prev = y_cur
             y_cur = y_next
-            if torch.norm(y_cur - y_prev) < 1e-5 and torch.all(A @ y_cur <= b + 1e-5):
+            if torch.norm(y_cur - y_prev) < 1e-6 and torch.all(A @ y_cur <= b + 1e-5):
                 break
 
         return y_cur
@@ -195,7 +204,7 @@ class DisjunctiveModel:
         self.disjunctions.append(d)
 
     def to_dnf_branches(self) -> List[PolyhedralBranch]:
-        """Expands the model into full DNF convex branches."""
+        """Expands the model into full DNF convex branches, safely pruning empty branches."""
         d = self.n_outputs
         global_A = []
         global_b = []
@@ -241,7 +250,18 @@ class DisjunctiveModel:
                             branch_A.append(ai)
                             branch_b.append(bi)
 
+            # 1. Prune if box bounds are empty
             if np.any(branch_lb > branch_ub):
+                continue
+
+            # 2. Prune if linear constraints cannot be satisfied on [branch_lb, branch_ub]
+            is_empty = False
+            for ai, bi in zip(branch_A, branch_b):
+                min_val = np.sum(np.where(ai >= 0, ai * branch_lb, ai * branch_ub))
+                if min_val > bi + 1e-5:
+                    is_empty = True
+                    break
+            if is_empty:
                 continue
 
             A_mat = torch.tensor(np.array(branch_A), dtype=torch.float32) if branch_A else torch.empty((0, d))

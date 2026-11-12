@@ -114,27 +114,37 @@ class PolyhedralBranch:
     def _solve_projection(self, z: Tensor) -> Tensor:
         lo = self.lo.to(z.device, z.dtype)
         hi = self.hi.to(z.device, z.dtype)
-        if self.is_pure_box:
+        if self.is_pure_box or self.A.shape[0] == 0:
             return torch.clamp(z, lo, hi)
         y = torch.clamp(z, lo, hi)
-        if self.A.shape[0] == 0:
-            return y
         A = self.A.to(z.device, z.dtype)
         b = self.b.to(z.device, z.dtype)
         if torch.all(A @ y <= b + 1e-6):
             return y
+        if A.shape[0] == 1:
+            A_row = A[0]
+            b_val = b[0]
+            lam_lo, lam_hi = 0.0, 50.0
+            for _ in range(30):
+                lam_mid = 0.5 * (lam_lo + lam_hi)
+                y_cand = torch.clamp(z - lam_mid * A_row, lo, hi)
+                if (A_row @ y_cand).item() > b_val.item():
+                    lam_lo = lam_mid
+                else:
+                    lam_hi = lam_mid
+            return torch.clamp(z - lam_hi * A_row, lo, hi)
         y_cur = y.clone()
         y_prev = y.clone()
         step_size = 0.1 / (torch.norm(A, p=2) ** 2 + 1e-4).item()
-        for k in range(50):
+        for k in range(80):
             beta = (k - 1) / (k + 2) if k > 0 else 0.0
             v = y_cur + beta * (y_cur - y_prev)
             viol = torch.clamp(A @ v - b, min=0.0)
-            grad = (v - z) + 2e2 * (A.T @ viol)
+            grad = (v - z) + 1e3 * (A.T @ viol)
             y_next = torch.clamp(v - step_size * grad, lo, hi)
             y_prev = y_cur
             y_cur = y_next
-            if torch.norm(y_cur - y_prev) < 1e-5 and torch.all(A @ y_cur <= b + 1e-5):
+            if torch.norm(y_cur - y_prev) < 1e-6 and torch.all(A @ y_cur <= b + 1e-5):
                 break
         return y_cur
 
@@ -196,6 +206,15 @@ class DisjunctiveModel:
                             b_A.append(ai); b_b.append(bi)
             if np.any(b_lb > b_ub):
                 continue
+            # Filter empty branches
+            is_empty = False
+            for ai, bi in zip(b_A, b_b):
+                min_val = np.sum(np.where(ai >= 0, ai * b_lb, ai * b_ub))
+                if min_val > bi + 1e-5:
+                    is_empty = True
+                    break
+            if is_empty:
+                continue
             A_m = torch.tensor(np.array(b_A), dtype=torch.float32) if b_A else torch.empty((0, d))
             b_v = torch.tensor(np.array(b_b), dtype=torch.float32) if b_b else torch.empty((0,))
             branches.append(PolyhedralBranch(A_m, b_v, torch.tensor(b_lb, dtype=torch.float32), torch.tensor(b_ub, dtype=torch.float32)))
@@ -205,7 +224,6 @@ class DisjunctiveModel:
     md("""## 2. Các Lớp Tối Ưu Hóa Khả Vi: DisNet gốc vs SAGE""")
 
     code("""class DisNetProjectionLayer(nn.Module):
-    \"\"\"Lớp chiếu DisNet gốc dùng đạo hàm giải tích KKT.\"\"\"
     def __init__(self, model: DisjunctiveModel):
         super().__init__()
         self.branches = model.to_dnf_branches()
@@ -218,7 +236,6 @@ class DisjunctiveModel:
         return z + (y_diff - z.detach())
 
 class SAGEProjectionLayer(nn.Module):
-    \"\"\"Lớp chiếu SAGE cải tiến với Certified Pruning và Switching-Aware Gradient.\"\"\"
     def __init__(self, model: DisjunctiveModel, rho: float = 0.3, n_samples: int = 32):
         super().__init__()
         self.branches = model.to_dnf_branches()
@@ -233,14 +250,12 @@ class SAGEProjectionLayer(nn.Module):
         d_k0 = dists[k0]
         y_star = self.branches[k0].project_fast(z)
 
-        # Certified Pruning check
         others = torch.cat([dists[:k0], dists[k0+1:]]) if K > 1 else torch.tensor([float('inf')])
         margin = float((others - d_k0).min().item()) if K > 1 else float('inf')
         gaps = dists - d_k0
         competitors = (gaps <= 2.0 * self.rho).nonzero(as_tuple=True)[0].tolist()
         certified = (len(competitors) <= 1)
 
-        # Local gradient
         z_loc = z.detach().clone().requires_grad_(True)
         y_loc = self.branches[k0].project_fast(z_loc)
         loss_loc = loss_fn(y_loc, y_gt)
@@ -253,7 +268,6 @@ class SAGEProjectionLayer(nn.Module):
         if certified and not local_is_dead:
             return grad_local, y_star, k0, info
 
-        # Adaptive radius if stuck
         if local_is_dead and certified:
             competitors = list(range(K))
             info['certified'] = False
@@ -261,7 +275,6 @@ class SAGEProjectionLayer(nn.Module):
         else:
             rho = self.rho
 
-        # Monte Carlo Perturbation over Competitors
         d = z.shape[0]
         u = torch.randn(self.n_samples, d, device=z.device, dtype=z.dtype)
         R0_vals = torch.zeros(self.n_samples, device=z.device, dtype=z.dtype)
@@ -287,7 +300,6 @@ class SAGEProjectionLayer(nn.Module):
 
             R0_vals[i] = (loss_fn(y_win, y_gt).detach() - L0) if winner_k != k0 else 0.0
 
-        # Score function: s_q(u) = +u
         cross_grad = (1.0 / rho) * (R0_vals.unsqueeze(-1) * u).mean(dim=0)
         return grad_local + cross_grad, y_star, k0, info
 
@@ -307,8 +319,7 @@ def constrained_model(backbone, model, layer_type='sage', rho=0.25, n_samples=32
     md("""## 3. Khởi tạo Bài toán Chính thức của DisNet (flux_end2end.jl)
 - **Global constraint:** $y_1 + y_2 \\ge 0.8$
 - **Rule 1 ($x\\text{\\_rule}$):** $y_1 \\le 0.2$ OR $0.4 \\le y_1 \\le 0.6$ OR $y_1 \\ge 0.8$
-- **Rule 2 ($y\\text{\\_rule}$):** $y_2 \\le 0.2$ OR $0.35 \\le y_2 \\le 0.55$ OR $y_2 \\ge 0.7$
-- **Tập nghiệm:** $3 \\times 3 = 9$ nhánh tuyển DNF rời rạc!""")
+- **Rule 2 ($y\\text{\\_rule}$):** $y_2 \\le 0.2$ OR $0.35 \\le y_2 \\le 0.55$ OR $y_2 \\ge 0.7$""")
 
     code("""dm = DisjunctiveModel(2)
 dm.set_bounds(lower=[0.0, 0.0], upper=[1.0, 1.0])
@@ -383,7 +394,7 @@ print(f'Huấn luyện xong trong {time.time()-t0:.2f} giây!')
 plt.figure(figsize=(9, 4.5))
 plt.plot(hist_d, 'r--', label='DisNet (Original KKT)', lw=2)
 plt.plot(hist_s, 'g-', label='SAGE (Proposed)', lw=2.5)
-plt.title('Training Convergence on 9 DNF Branches (flux_end2end.jl)', fontsize=12, fontweight='bold')
+plt.title('Training Convergence on DNF Branches (flux_end2end.jl)', fontsize=12, fontweight='bold')
 plt.xlabel('Epoch')
 plt.ylabel('Loss (Log Scale)')
 plt.yscale('log')
