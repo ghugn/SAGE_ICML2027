@@ -151,37 +151,41 @@ def build_backbone():
 
 
 def run_benchmark(epochs=40, lr=0.015, batch_size=64):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
+
     print("=" * 75, flush=True)
     print("SAGE vs DisNet: REAL-WORLD DATASET BENCHMARK (ICML 2027)", flush=True)
+    print(f"Accelerated Execution Device: {device.type.upper()} [{gpu_name}]", flush=True)
     print("=" * 75, flush=True)
 
     # 1. Prepare Dataset (N = 1000)
     X, Y = generate_dataset(N=1000, seed=42)
     train_n = 800
-    X_train, Y_train = X[:train_n], Y[:train_n]
-    X_test, Y_test = X[train_n:], Y[train_n:]
+    X_train, Y_train = X[:train_n].to(device), Y[:train_n].to(device)
+    X_test, Y_test = X[train_n:].to(device), Y[train_n:].to(device)
 
     train_loader = DataLoader(TensorDataset(X_train, Y_train), batch_size=batch_size, shuffle=True)
 
     print(f"Dataset Size: {len(X)} samples | Train: {len(X_train)} | Test: {len(X_test)}", flush=True)
     print(f"Corridor 0 samples: {(Y[:, 0] < 0).sum().item()} | Corridor 1 samples: {(Y[:, 0] > 0).sum().item()}", flush=True)
 
-    # 2. Initialize Models with Identical Weights
+    # 2. Initialize Models with Identical Weights on Target Device
     torch.manual_seed(101)
     base_bb = build_backbone()
 
     # Unconstrained Model
-    bb_unconstrained = build_backbone()
+    bb_unconstrained = build_backbone().to(device)
     bb_unconstrained.load_state_dict(base_bb.state_dict())
     opt_unc = torch.optim.Adam(bb_unconstrained.parameters(), lr=lr)
 
     # DisNet Model
-    bb_disnet = build_backbone()
+    bb_disnet = build_backbone().to(device)
     bb_disnet.load_state_dict(base_bb.state_dict())
     opt_dis = torch.optim.Adam(bb_disnet.parameters(), lr=lr)
 
     # SAGE Model
-    bb_sage = build_backbone()
+    bb_sage = build_backbone().to(device)
     bb_sage.load_state_dict(base_bb.state_dict())
     opt_sage = torch.optim.Adam(bb_sage.parameters(), lr=lr)
 
@@ -191,7 +195,7 @@ def run_benchmark(epochs=40, lr=0.015, batch_size=64):
     hist_dis = []
     hist_sage = []
 
-    print("\nTraining 3 models for 40 epochs...", flush=True)
+    print(f"\nTraining 3 models for {epochs} epochs on {device.type.upper()}...", flush=True)
     t0 = time.time()
 
     for ep in range(1, epochs + 1):
@@ -288,9 +292,14 @@ def run_benchmark(epochs=40, lr=0.015, batch_size=64):
     axes[1].add_patch(c0_rect)
     axes[1].add_patch(c1_rect)
 
-    axes[1].scatter(pred_unc[:, 0], pred_unc[:, 1], c='gray', alpha=0.4, s=25, label=f'Unconstrained ({feas_unc:.0f}% safe)')
-    axes[1].scatter(pred_dis[:, 0], pred_dis[:, 1], c='red', alpha=0.7, s=35, marker='x', label=f'DisNet ({feas_dis:.0f}% safe)')
-    axes[1].scatter(pred_sage[:, 0], pred_sage[:, 1], c='green', alpha=0.8, s=40, marker='o', label=f'SAGE ({feas_sage:.0f}% safe)')
+    # Move predictions to CPU for numpy plotting
+    p_unc_cpu = pred_unc.cpu().numpy()
+    p_dis_cpu = pred_dis.cpu().numpy()
+    p_sage_cpu = pred_sage.cpu().numpy()
+
+    axes[1].scatter(p_unc_cpu[:, 0], p_unc_cpu[:, 1], c='gray', alpha=0.4, s=25, label=f'Unconstrained ({feas_unc:.0f}% safe)')
+    axes[1].scatter(p_dis_cpu[:, 0], p_dis_cpu[:, 1], c='red', alpha=0.7, s=35, marker='x', label=f'DisNet ({feas_dis:.0f}% safe)')
+    axes[1].scatter(p_sage_cpu[:, 0], p_sage_cpu[:, 1], c='green', alpha=0.8, s=40, marker='o', label=f'SAGE ({feas_sage:.0f}% safe)')
 
     axes[1].set_xlim(-2.5, 2.5)
     axes[1].set_ylim(-2.5, 2.5)
