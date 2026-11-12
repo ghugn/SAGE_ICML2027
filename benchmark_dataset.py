@@ -16,10 +16,13 @@ Models:
 """
 
 import os
+import sys
 import time
 import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -147,10 +150,10 @@ def build_backbone():
     )
 
 
-def run_benchmark(epochs=50, lr=0.015, batch_size=64):
-    print("=" * 75)
-    print("SAGE vs DisNet: REAL-WORLD DATASET BENCHMARK (ICML 2027)")
-    print("=" * 75)
+def run_benchmark(epochs=40, lr=0.015, batch_size=64):
+    print("=" * 75, flush=True)
+    print("SAGE vs DisNet: REAL-WORLD DATASET BENCHMARK (ICML 2027)", flush=True)
+    print("=" * 75, flush=True)
 
     # 1. Prepare Dataset (N = 1000)
     X, Y = generate_dataset(N=1000, seed=42)
@@ -160,8 +163,8 @@ def run_benchmark(epochs=50, lr=0.015, batch_size=64):
 
     train_loader = DataLoader(TensorDataset(X_train, Y_train), batch_size=batch_size, shuffle=True)
 
-    print(f"Dataset Size: {len(X)} samples | Train: {len(X_train)} | Test: {len(X_test)}")
-    print(f"Corridor 0 samples: {(Y[:, 0] < 0).sum().item()} | Corridor 1 samples: {(Y[:, 0] > 0).sum().item()}")
+    print(f"Dataset Size: {len(X)} samples | Train: {len(X_train)} | Test: {len(X_test)}", flush=True)
+    print(f"Corridor 0 samples: {(Y[:, 0] < 0).sum().item()} | Corridor 1 samples: {(Y[:, 0] > 0).sum().item()}", flush=True)
 
     # 2. Initialize Models with Identical Weights
     torch.manual_seed(101)
@@ -188,7 +191,7 @@ def run_benchmark(epochs=50, lr=0.015, batch_size=64):
     hist_dis = []
     hist_sage = []
 
-    print("\nTraining 3 models for 50 epochs...")
+    print("\nTraining 3 models for 40 epochs...", flush=True)
     t0 = time.time()
 
     for ep in range(1, epochs + 1):
@@ -233,11 +236,11 @@ def run_benchmark(epochs=50, lr=0.015, batch_size=64):
         hist_dis.append(l_dis_avg)
         hist_sage.append(l_sage_avg)
 
-        if ep % 10 == 0 or ep == 1:
-            print(f"Epoch {ep:2d}/{epochs:2d} | Unc Loss: {l_unc_avg:.4f} | DisNet Loss: {l_dis_avg:.4f} | SAGE Loss: {l_sage_avg:.4f}")
+        if ep % 5 == 0 or ep == 1:
+            print(f"Epoch {ep:2d}/{epochs:2d} | Unc Loss: {l_unc_avg:.4f} | DisNet Loss: {l_dis_avg:.4f} | SAGE Loss: {l_sage_avg:.4f}", flush=True)
 
     elapsed = time.time() - t0
-    print(f"\nTraining completed in {elapsed:.2f} seconds.")
+    print(f"\nTraining completed in {elapsed:.2f} seconds.", flush=True)
 
     # 3. Final Test Evaluation
     with torch.no_grad():
@@ -255,15 +258,15 @@ def run_benchmark(epochs=50, lr=0.015, batch_size=64):
 
     improvement = (test_l_dis - test_l_sage) / test_l_dis * 100.0
 
-    print("=" * 75)
-    print("FINAL BENCHMARK EVALUATION (ON 200 UNSEEN TEST SAMPLES):")
-    print("=" * 75)
-    print(f"{'Method':<25} | {'Test MSE':<12} | {'Safety Feasibility':<20} | {'Status'}")
-    print("-" * 75)
-    print(f"{'Unconstrained MLP':<25} | {test_l_unc:<12.4f} | {feas_unc:>18.1f}% | Unsafe (violates corridors)")
-    print(f"{'DisNet (KKT baseline)':<25} | {test_l_dis:<12.4f} | {feas_dis:>18.1f}% | Dead gradient trapped")
-    print(f"{'SAGE (Proposed)':<25} | {test_l_sage:<12.4f} | {feas_sage:>18.1f}% | Outperforms DisNet (+{improvement:.1f}%)")
-    print("=" * 75)
+    print("=" * 75, flush=True)
+    print("FINAL BENCHMARK EVALUATION (ON 200 UNSEEN TEST SAMPLES):", flush=True)
+    print("=" * 75, flush=True)
+    print(f"{'Method':<25} | {'Test MSE':<12} | {'Safety Feasibility':<20} | {'Status'}", flush=True)
+    print("-" * 75, flush=True)
+    print(f"{'Unconstrained MLP':<25} | {test_l_unc:<12.4f} | {feas_unc:>18.1f}% | Unsafe (violates corridors)", flush=True)
+    print(f"{'DisNet (KKT baseline)':<25} | {test_l_dis:<12.4f} | {feas_dis:>18.1f}% | Dead gradient trapped", flush=True)
+    print(f"{'SAGE (Proposed)':<25} | {test_l_sage:<12.4f} | {feas_sage:>18.1f}% | Outperforms DisNet (+{improvement:.1f}%)", flush=True)
+    print("=" * 75, flush=True)
 
     # 4. Generate Comprehensive Visualizations
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
@@ -300,8 +303,9 @@ def run_benchmark(epochs=50, lr=0.015, batch_size=64):
     plt.tight_layout()
     out_img = 'benchmark_dataset_results.png'
     plt.savefig(out_img, dpi=200)
-    print(f"✅ Benchmark comparison visualization saved to {out_img}")
+    print(f"✅ Benchmark comparison visualization saved to {out_img}", flush=True)
 
 
 if __name__ == '__main__':
     run_benchmark(epochs=40, lr=0.015, batch_size=64)
+
