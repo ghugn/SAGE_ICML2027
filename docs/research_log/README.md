@@ -35,4 +35,7 @@ Logs:
 - [`2026-11-13_workspace_consolidation.md`](2026-11-13_workspace_consolidation.md) —
   records why the GitHub repository is the DisjunctiveNet project and restores
   a single canonical local working tree.
+- [`2026-11-13_unified_full_kaggle_verification.md`](2026-11-13_unified_full_kaggle_verification.md) —
+  records the single-revision Kaggle run in which every gate and all 2671
+  regression tests passed before Phase 7.
 
