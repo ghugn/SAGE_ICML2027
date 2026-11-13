@@ -40,6 +40,13 @@ produce `sage_reproduction_bundle.zip`. The archive contains the environment,
 per-stage results, raw stdout logs and final acceptance summary needed for
 remote diagnosis and paper bookkeeping.
 
+The first Kaggle execution exposed a version-selection bug: Kaggle's existing
+Julia 1.12 executable was selected ahead of the pinned Julia 1.13.3 runtime,
+causing a manifest-version warning and failures in `pocl_standalone_jll`,
+`KernelAbstractions`, `NNlib`, `Flux`, and `DisjunctiveNet`. The installer now
+queries `VERSION`, accepts a system executable only on an exact match, and
+otherwise downloads and asserts Julia 1.13.3 before package instantiation.
+
 ## Local verification before commit
 
 Commands were run against the migrated repository root with Julia 1.13.3:
