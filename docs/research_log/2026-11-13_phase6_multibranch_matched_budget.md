@@ -133,6 +133,49 @@ variance-or-wall-time efficiency gate: PASS
 PHASE6_MATCHED_BUDGET=PASS
 ```
 
+## Independent Kaggle reproduction
+
+Run identifier: `20261113_112355_phase6`  
+Git commit executed: `b572db043c302fe2ba87adac74242d1eccd2f071`  
+Environment: Kaggle Linux x86-64, Julia 1.13.3, Python 3.13.18, 4 CPUs,
+32,869,296 KiB reported memory, CPU-only.
+
+The fresh session instantiated and precompiled the pinned environment in
+`676.740 s`. The Phase 6 benchmark then completed in `26.965 s` and emitted the
+required acceptance token.
+
+The deterministic fidelity values reproduced exactly to printed precision:
+
+- parity error: `5.8347694962500474e-8`;
+- SAGE relative bias: `0.013490350779579496`;
+- SAGE trace variance: `1.0957776215781578`;
+- SAGE RMSE: `1.0475259881289782`;
+- SAGE mean/minimum cosine: `0.967845582384084 / 0.8459257578421155`;
+- SAGE/black-box variance ratio: `0.9841114584837657`.
+
+The certified eight-branch workload also reproduced the structural results:
+
+| Metric | Kaggle result |
+|---|---:|
+| Certificate rate | 0.50 |
+| Safe competitor-pruning rate | 0.9285714 |
+| Black-box / SAGE global searches | 192 / 96 |
+| Global-search reduction | 0.50 |
+| Black-box wall time | 0.60235949 s |
+| SAGE complete backward wall time | 0.52993301 s |
+| SAGE / black-box wall-time ratio | 0.8797620 |
+
+Thus SAGE was approximately `12.02%` faster in this Kaggle run, compared with
+`17.14%` in the local run. The direction of the timing gain reproduced, but its
+magnitude changed across machines. This supports only a controlled-workload
+efficiency signal, not a general speedup claim. All perturbed outputs remained
+logically feasible and all three pre-registered gates passed.
+
+The foundation, scalar-gradient, scalar discontinuity-learning, and full-test
+stages were intentionally reported as `SKIPPED` by `RUN_MODE = "phase6"`; they
+were not inferred to pass from stale logs. Their earlier independent full-run
+evidence remains separate from this Phase 6 reproduction.
+
 ## Honest conclusion
 
 The result establishes a first nontrivial multi-branch signal consistent with
