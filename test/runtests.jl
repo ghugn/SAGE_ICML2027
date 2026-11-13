@@ -12,6 +12,7 @@ import MathOptInterface as MOI
     include("test_lazy_search.jl")
     include("test_switching_certificate.jl")
     include("test_gradient_fidelity.jl")
+    include("test_phase7_scaling.jl")
     include("test_standard_form.jl")
     include("test_hulls.jl")
     include("test_projection_backend.jl")

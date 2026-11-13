@@ -68,7 +68,11 @@ julia --project=. scripts/benchmark_multibranch_matched_budget.jl
 
 ### Kaggle runner mode
 
-`SAGE_Kaggle_Reproducibility.ipynb` now defaults to `RUN_MODE = 'phase6'`. A Kaggle **Run All** therefore installs/reuses the pinned Julia environment, checks out the latest repository, runs this Phase 6 gate, validates `PHASE6_MATCHED_BUDGET=PASS`, and bundles the logs. The already independently verified foundation, scalar-gradient, discontinuity-learning, and full-regression gates are marked `SKIPPED` in this resume mode rather than silently treated as passes.
+At the time of the Phase 6 reproduction, `SAGE_Kaggle_Reproducibility.ipynb`
+defaulted to `RUN_MODE = 'phase6'`. That mode remains available and runs this
+accepted gate while marking the independently verified earlier stages as
+`SKIPPED`, rather than silently treating them as passes. The notebook default
+has since advanced to the Phase 7 experiment.
 
 Each execution writes to a timestamped `sage_reproduction_logs/<run-id>_<mode>/` directory so evidence from an older session cannot be mistaken for output from the current run.
 

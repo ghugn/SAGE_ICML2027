@@ -38,6 +38,8 @@ julia-*/
 julia-*.tar.gz
 sage_reproduction_logs/
 sage_reproduction_bundle.zip
+phase7_results*/
+tmp_phase7*/
 
 # OS/editor
 .DS_Store

@@ -38,4 +38,8 @@ Logs:
 - [`2026-11-13_unified_full_kaggle_verification.md`](2026-11-13_unified_full_kaggle_verification.md) —
   records the single-revision Kaggle run in which every gate and all 2671
   regression tests passed before Phase 7.
+- [`2026-11-13_phase7_scaling_smoke.md`](2026-11-13_phase7_scaling_smoke.md) —
+  pre-registers and records the honest scaling failure: correctness and 50%
+  global-search reduction persist, but fixed-budget fidelity and total backward
+  time do not yet scale to dimensions 4 and 8.
 
