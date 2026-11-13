@@ -31,6 +31,15 @@ workflow. Internet access is required on the first run.
 reproduction, even though Julia libraries often omit it for broader version
 compatibility.
 
+### Post-migration notebook audit
+
+The runner was subsequently extended to record the platform, Python version,
+CPU count and total memory; measure wall-clock time and exit/token status for
+every Julia stage; refresh an existing Kaggle checkout from `origin/main`; and
+produce `sage_reproduction_bundle.zip`. The archive contains the environment,
+per-stage results, raw stdout logs and final acceptance summary needed for
+remote diagnosis and paper bookkeeping.
+
 ## Local verification before commit
 
 Commands were run against the migrated repository root with Julia 1.13.3:

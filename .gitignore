@@ -32,6 +32,13 @@ runs/
 outputs/
 checkpoints/
 
+# Kaggle/local reproduction runner outputs
+julia_depot/
+julia-*/
+julia-*.tar.gz
+sage_reproduction_logs/
+sage_reproduction_bundle.zip
+
 # OS/editor
 .DS_Store
 .vscode/
