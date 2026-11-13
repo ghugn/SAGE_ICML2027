@@ -109,6 +109,7 @@ export RelevantProjectionResult
 export SAGESampleRecord
 export SAGEEstimate
 export sample_ball_smoothing
+export sample_antithetic_ball_smoothing
 export ball_smoothing_score
 export fixed_branch_loss_gradient
 export project_relevant_branches

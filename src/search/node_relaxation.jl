@@ -26,6 +26,30 @@ function _constraint_distance_lower_bound(
     return norm_a == 0.0 ? Inf : residual / norm_a
 end
 
+function _tighten_axis_interval!(
+    lower::Vector{Float64},
+    upper::Vector{Float64},
+    constraint::LinearConstraint;
+    coefficient_tol::Float64 = 1e-12,
+)
+    active_indices = findall(value -> abs(value) > coefficient_tol, constraint.a)
+    length(active_indices) == 1 || return false
+    coordinate = only(active_indices)
+    coefficient = constraint.a[coordinate]
+    boundary = constraint.b / coefficient
+
+    if constraint.sense == :(==)
+        lower[coordinate] = max(lower[coordinate], boundary)
+        upper[coordinate] = min(upper[coordinate], boundary)
+    elseif (constraint.sense == :<= && coefficient > 0) ||
+           (constraint.sense == :>= && coefficient < 0)
+        upper[coordinate] = min(upper[coordinate], boundary)
+    else
+        lower[coordinate] = max(lower[coordinate], boundary)
+    end
+    return true
+end
+
 """
     geometric_lower_bound(model, yhat, assignments)
 
@@ -41,29 +65,38 @@ function geometric_lower_bound(
         throw(DimensionMismatch("yhat dimension does not match the model."))
     _validate_partial_assignments(model, assignments)
 
-    box_distance_squared = 0.0
-    for j in eachindex(yhat)
-        delta =
-            yhat[j] < model.lb[j] ? model.lb[j] - yhat[j] :
-            yhat[j] > model.ub[j] ? yhat[j] - model.ub[j] : 0.0
-        box_distance_squared += delta^2
-    end
-    distance_bound = sqrt(box_distance_squared)
-
+    # Axis-aligned constraints can be intersected exactly. Summing their
+    # coordinate-wise squared distances is a strictly stronger certified bound
+    # than taking only the largest individual violation, while remaining cheap.
+    lower = copy(model.lb)
+    upper = copy(model.ub)
+    nonaxis_constraints = LinearConstraint[]
     for constraint in model.constraints
-        distance_bound = max(
-            distance_bound,
-            _constraint_distance_lower_bound(constraint, yhat),
-        )
+        _tighten_axis_interval!(lower, upper, constraint) ||
+            push!(nonaxis_constraints, constraint)
     end
     for (rule_index, choice) in enumerate(assignments)
         choice == 0 && continue
         for constraint in model.disjunctions[rule_index].disjuncts[choice]
-            distance_bound = max(
-                distance_bound,
-                _constraint_distance_lower_bound(constraint, yhat),
-            )
+            _tighten_axis_interval!(lower, upper, constraint) ||
+                push!(nonaxis_constraints, constraint)
         end
+    end
+
+    any(lower .> upper) && return Inf
+    box_distance_squared = 0.0
+    for coordinate in eachindex(yhat)
+        delta =
+            yhat[coordinate] < lower[coordinate] ? lower[coordinate] - yhat[coordinate] :
+            yhat[coordinate] > upper[coordinate] ? yhat[coordinate] - upper[coordinate] : 0.0
+        box_distance_squared += delta^2
+    end
+    distance_bound = sqrt(box_distance_squared)
+    for constraint in nonaxis_constraints
+        distance_bound = max(
+            distance_bound,
+            _constraint_distance_lower_bound(constraint, yhat),
+        )
     end
 
     return 0.5 * distance_bound^2

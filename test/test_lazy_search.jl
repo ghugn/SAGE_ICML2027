@@ -26,6 +26,18 @@ using Random
 
     @test_throws DimensionMismatch geometric_lower_bound(dm, yhat, Int[])
     @test_throws ArgumentError solve_node_relaxation(dm, yhat, [3])
+
+    box_model = DisjunctiveModel(2)
+    add_disjunction!(
+        box_model,
+        [
+            LinearConstraint([1.0, 0.0], :>=, 1.0),
+            LinearConstraint([0.0, 1.0], :>=, 2.0),
+        ],
+        [LinearConstraint([1.0, 0.0], :<=, -1.0)],
+    )
+    # Exact for the selected axis-aligned box: 0.5 * (1^2 + 2^2).
+    @test geometric_lower_bound(box_model, [0.0, 0.0], [1]) ≈ 2.5
 end
 
 @testset "Lazy search resolves the Phase 0 counterexample" begin
@@ -69,6 +81,34 @@ end
     @test reversed.rule_order == [2, 1]
     @test reversed.status == :optimal
     @test reversed.objective ≈ oracle.objective
+end
+
+@testset "Lazy search reuses a certified external incumbent" begin
+    dm = DisjunctiveModel(1)
+    add_disjunction!(
+        dm,
+        [LinearConstraint([1.0], :<=, 2.0)],
+        [LinearConstraint([1.0], :>=, 5.0)],
+    )
+    point = [3.2]
+    reference = project_branch(dm, point, [1])
+    reused = lazy_branch_search(
+        dm,
+        point;
+        incumbent_result = reference,
+        seed_incumbent = false,
+    )
+    oracle = exhaustive_project(dm, point)
+    @test reused.status == :optimal
+    @test reused.choices == oracle.choices
+    @test reused.objective ≈ oracle.objective
+    @test reused.leaf_solves + reused.pruned_branches == reused.total_branches
+    stale = project_branch(dm, [1.0], [1])
+    @test_throws ArgumentError lazy_branch_search(
+        dm,
+        point;
+        incumbent_result = stale,
+    )
 end
 
 @testset "Lazy search preserves deterministic ties" begin

@@ -95,3 +95,30 @@ end
     @test stable.perturbed_global_searches == 0
     @test stable.competitor_branch_solves == 0
 end
+
+@testset "Phase 7 exact lazy fallback avoids competitor enumeration" begin
+    geometry = scaling_box_union(4, 16)
+    model = disjunctive_model(geometry)
+    target = copy(geometry.centers[:, 16])
+    z = 0.52 .* geometry.centers[:, 1] .+ 0.48 .* geometry.centers[:, 2]
+    radius = 0.40 * norm(geometry.centers[:, 1] .- geometry.centers[:, 2])
+    samples = sample_matrix(MersenneTwister(20271114), 4, 6; antithetic = true)
+    center = lazy_branch_search(model, z; store_prune_records = false)
+    analytic = analytic_sage_gradient(geometry, z, radius, target, samples)
+    estimate = sage_gradient(
+        model,
+        z,
+        radius,
+        y -> task_loss(y, target),
+        y -> task_loss_gradient(y, target);
+        samples = samples,
+        center_result = center,
+        global_strategy = :lazy,
+        store_records = true,
+    )
+    @test estimate.status == :ok
+    @test estimate.lazy_global_searches == size(samples, 2)
+    @test estimate.restricted_global_searches == 0
+    @test isapprox(estimate.gradient, analytic.gradient; atol = 1e-6)
+    @test all(check_feasibility(model, record.global_y).feasible for record in estimate.records)
+end

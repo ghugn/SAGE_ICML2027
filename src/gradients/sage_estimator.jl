@@ -30,6 +30,10 @@ struct SAGEEstimate
     reference_branch_solves::Int
     perturbed_global_searches::Int
     competitor_branch_solves::Int
+    restricted_global_searches::Int
+    lazy_global_searches::Int
+    lazy_leaf_solves::Int
+    lazy_relaxation_solves::Int
     switching_samples::Int
     unresolved_samples::Int
     solve_time::Float64
@@ -67,7 +71,10 @@ end
 
 Implement the SAGE residual decomposition from proposal equations (13)-(18).
 `loss` is evaluated separately on each feasible projected output;
-`loss_gradient(y)` supplies its gradient with respect to that output.
+`loss_gradient(y)` supplies its gradient with respect to that output. When a
+stability certificate is inconclusive, `global_strategy=:auto` enumerates only
+small certified competitor sets and otherwise runs exact lazy search seeded by
+the already-computed fixed-reference projection.
 """
 function sage_gradient(
     model::DisjunctiveModel,
@@ -88,6 +95,8 @@ function sage_gradient(
     tie_tol::Real = 1e-10,
     max_nodes::Int = 1_000_000,
     max_relevant_branches::Int = 100_000,
+    global_strategy::Symbol = :auto,
+    restricted_branch_limit::Int = 4,
     store_records::Bool = true,
 )
     length(z) == model.n_outputs ||
@@ -97,6 +106,11 @@ function sage_gradient(
         throw(ArgumentError("radius must be finite and strictly positive."))
     isfinite(beta) && beta >= 2.0 ||
         throw(ArgumentError("beta must be finite and at least 2."))
+    global_strategy in (:auto, :restricted, :lazy) || throw(ArgumentError(
+        "global_strategy must be :auto, :restricted, or :lazy.",
+    ))
+    restricted_branch_limit > 0 ||
+        throw(ArgumentError("restricted_branch_limit must be positive."))
 
     started = time_ns()
     center = Float64.(collect(z))
@@ -138,7 +152,7 @@ function sage_gradient(
     stability.center_status == :optimal ||
         return SAGEEstimate(
             Float64[], :center_uncertified, center, Float64(radius), Int[],
-            stability, 0, 0, 0, 0, 0, 0,
+            stability, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             (time_ns() - started) / 1e9, SAGESampleRecord[],
         )
 
@@ -154,6 +168,10 @@ function sage_gradient(
     reference_solves = 0
     global_searches = 0
     competitor_solves = 0
+    restricted_searches = 0
+    lazy_searches = 0
+    lazy_leaf_solves = 0
+    lazy_relaxation_solves = 0
     switching_samples = 0
     unresolved_samples = 0
     records = SAGESampleRecord[]
@@ -196,20 +214,54 @@ function sage_gradient(
         switched = false
 
         if !certifies_stability(stability)
-            relevant = project_relevant_branches(
-                model,
-                w,
-                stability.winner,
-                relevant_groups;
-                reference_result = reference,
-                solver = solver,
-                feasibility_tol = feasibility_tol,
-                tie_tol = tie_tol,
-                max_relevant_branches = max_relevant_branches,
-            )
             global_searches += 1
-            competitor_solves += relevant.solved_branches - 1
-            if relevant.status != :optimal
+            relevant_count = 1 + sum(group.branch_count for group in relevant_groups; init = 0)
+            use_restricted = global_strategy == :restricted ||
+                (global_strategy == :auto && relevant_count <= restricted_branch_limit)
+            global_status = :uncertified
+            candidate_y = Float64[]
+            candidate_choices = Int[]
+            if use_restricted
+                relevant = project_relevant_branches(
+                    model,
+                    w,
+                    stability.winner,
+                    relevant_groups;
+                    reference_result = reference,
+                    solver = solver,
+                    feasibility_tol = feasibility_tol,
+                    tie_tol = tie_tol,
+                    max_relevant_branches = max_relevant_branches,
+                )
+                restricted_searches += 1
+                competitor_solves += relevant.solved_branches - 1
+                global_status = relevant.status
+                candidate_y = relevant.y
+                candidate_choices = relevant.choices
+            else
+                global_result = lazy_branch_search(
+                    model,
+                    w;
+                    solver = solver,
+                    feasibility_tol = feasibility_tol,
+                    tie_tol = tie_tol,
+                    max_nodes = max_nodes,
+                    seed_incumbent = false,
+                    incumbent_result = reference,
+                    store_prune_records = false,
+                )
+                lazy_searches += 1
+                # The externally supplied reference branch is already counted
+                # in reference_solves, so only additional leaves are competitors.
+                additional_leaves = max(global_result.leaf_solves - 1, 0)
+                competitor_solves += additional_leaves
+                lazy_leaf_solves += additional_leaves
+                lazy_relaxation_solves += global_result.relaxation_solves
+                global_status = global_result.status
+                candidate_y = global_result.y
+                candidate_choices = global_result.choices
+            end
+            if global_status != :optimal
                 unresolved_samples += 1
                 store_records && push!(records, SAGESampleRecord(
                     copy(u), w, local_result.y, Float64[], Int[], local_loss, NaN, NaN,
@@ -217,8 +269,8 @@ function sage_gradient(
                 ))
                 continue
             end
-            global_y = relevant.y
-            global_choices = relevant.choices
+            global_y = candidate_y
+            global_choices = candidate_choices
             global_loss = Float64(loss(global_y))
             isfinite(global_loss) ||
                 throw(ArgumentError("loss returned a non-finite value."))
@@ -251,6 +303,10 @@ function sage_gradient(
         reference_solves,
         global_searches,
         competitor_solves,
+        restricted_searches,
+        lazy_searches,
+        lazy_leaf_solves,
+        lazy_relaxation_solves,
         switching_samples,
         unresolved_samples,
         (time_ns() - started) / 1e9,

@@ -42,4 +42,8 @@ Logs:
   pre-registers and records the honest scaling failure: correctness and 50%
   global-search reduction persist, but fixed-budget fidelity and total backward
   time do not yet scale to dimensions 4 and 8.
+- [`2026-11-13_phase7_completion.md`](2026-11-13_phase7_completion.md) —
+  completes the controlled scaling gate with tighter safe geometry, exact lazy
+  competitor search, independent reference checks, dimension-aware antithetic
+  sampling, and a proposal-faithful variance-or-computation decision.
 

@@ -56,6 +56,39 @@ end
 sample_ball_smoothing(dimension::Integer; beta::Real = 2.0) =
     sample_ball_smoothing(Random.default_rng(), dimension; beta = beta)
 
+"""
+    sample_antithetic_ball_smoothing(rng, dimension, count; beta=2.0)
+
+Draw marginally exact samples from the same compact ball density in symmetric
+`u, -u` pairs, followed by one independent draw when `count` is odd. This
+changes Monte Carlo coupling, not the smoothed objective or the score in
+proposal equations (17)-(18).
+"""
+function sample_antithetic_ball_smoothing(
+    rng::AbstractRNG,
+    dimension::Integer,
+    count::Integer;
+    beta::Real = 2.0,
+)
+    d = Int(dimension)
+    n = Int(count)
+    d > 0 || throw(ArgumentError("dimension must be positive."))
+    n > 0 || throw(ArgumentError("count must be positive."))
+    isfinite(beta) && beta >= 2.0 ||
+        throw(ArgumentError("beta must be finite and at least 2."))
+    samples = Matrix{Float64}(undef, d, n)
+    column = 1
+    while column <= n
+        sample = sample_ball_smoothing(rng, d; beta = beta)
+        samples[:, column] .= sample
+        if column + 1 <= n
+            samples[:, column + 1] .= -sample
+        end
+        column += 2
+    end
+    return samples
+end
+
 """Return `s_q(u) = -grad log q(u)` for the polynomial ball density."""
 function ball_smoothing_score(u::AbstractVector{<:Real}; beta::Real = 2.0)
     isfinite(beta) && beta >= 2.0 ||

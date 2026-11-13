@@ -169,3 +169,12 @@ unchanged while addressing:
 4. reporting branch solves and total time, never only global-call counts;
 5. continued comparison with STE, which remains a strong low-cost heuristic on
    this controlled box family.
+
+## Subsequent work
+
+The smoke result above remains unchanged. Its bottlenecks were addressed in the
+separate [`2026-11-13_phase7_completion.md`](2026-11-13_phase7_completion.md)
+experiment, which adds tighter safe geometry, exact lazy incumbent reuse,
+independent reference checks and dimension-aware antithetic sampling. Keeping
+the experiments separate prevents the later successful gate from overwriting
+this pre-registered negative result.

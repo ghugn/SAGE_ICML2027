@@ -5,20 +5,22 @@ neural networks with mixed logical-linear constraints.
 
 > **Research status (2026-11-13):** the certified foundation, lazy search,
 > switching certificate, proposal-faithful SAGE estimator, and controlled
-> scalar and multi-branch matched-budget gates are implemented. The first 2D
-> eight-branch slice passes. The pre-registered Phase 7 scaling smoke test
-> preserves correctness and safe pruning but fails fixed-budget fidelity and
-> wall-time gates at dimensions 4 and 8. This is not yet evidence of superiority
-> on real datasets or large-scale problems. See
+> scalar, multi-branch, and controlled Phase 7 scaling gates are implemented.
+> The original fixed-`N=64` Phase 7 smoke test remains an honest failure. The
+> completed gate uses independent reference checks and dimension-aware
+> antithetic sampling; it preserves exact feasibility, reduces global searches
+> by 50%, and reduces aggregate estimator variance, although median wall time is
+> still approximately 7% above black-box smoothing in the final local run. This is not yet evidence of
+> superiority on real datasets or large-scale problems. See
 > [`docs/research_log`](docs/research_log) for the paper-facing audit trail.
 
 ## Kaggle reproduction
 
 Upload and run [`SAGE_Kaggle_Reproducibility.ipynb`](SAGE_Kaggle_Reproducibility.ipynb)
 with Internet enabled. The notebook installs a pinned Julia release, clones this
-repository and instantiates dependencies. `RUN_MODE = "phase7"` runs the current
-scaling experiment and retains PASS or FAIL evidence; `RUN_MODE = "full"` runs
-the previously accepted gates and full regression suite. A GPU is not required
+repository and instantiates dependencies. `RUN_MODE = "phase7"` runs the
+completed controlled scaling gate and retains its CSV/JSON evidence;
+`RUN_MODE = "full"` runs every accepted gate and the full regression suite. A GPU is not required
 because the current certified search and QP backend are CPU workloads.
 
 The package lets users define constraints of the form
@@ -193,6 +195,18 @@ The current recorded result is an honest `PHASE7_SCALING_SMOKE=FAIL`: exact
 feasibility and safe pruning hold, but fixed-sample fidelity and complete SAGE
 backward time do not yet scale to dimensions 4 and 8. See the Phase 7 research
 log before changing its thresholds or benchmark geometry.
+
+Run the completed proposal-aligned Phase 7 gate:
+
+```bash
+julia --project=. scripts/benchmark_phase7_complete.jl
+```
+
+This second gate does not replace the failed smoke test. It adds two independent
+high-budget reference estimates, dimension-aware antithetic compact-`q`
+sampling, controlled one-factor scaling slices, repeated timing, and the
+proposal's variance-or-total-computation efficiency decision. It currently
+reports `PHASE7_COMPLETE=PASS`; the separate wall-time sub-gate remains `FAIL`.
 
 ---
 

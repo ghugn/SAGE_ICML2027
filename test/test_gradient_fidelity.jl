@@ -16,6 +16,16 @@ using LinearAlgebra
     @test_throws ArgumentError sample_ball_smoothing(rng, 0)
     @test_throws ArgumentError sample_ball_smoothing(rng, 2; beta = 1.5)
     @test_throws ArgumentError ball_smoothing_score([1.0])
+
+    antithetic = sample_antithetic_ball_smoothing(MersenneTwister(7), 3, 7)
+    @test size(antithetic) == (3, 7)
+    @test antithetic[:, 2] == -antithetic[:, 1]
+    @test antithetic[:, 4] == -antithetic[:, 3]
+    @test antithetic[:, 6] == -antithetic[:, 5]
+    @test all(norm(antithetic[:, column]) < 1.0 for column in axes(antithetic, 2))
+    @test_throws ArgumentError sample_antithetic_ball_smoothing(rng, 2, 0)
+    @test_throws ArgumentError sample_antithetic_ball_smoothing(rng, 0, 2)
+    @test_throws ArgumentError sample_antithetic_ball_smoothing(rng, 2, 2; beta = 1.5)
 end
 
 @testset "Fixed-branch implicit gradient matches finite differences" begin

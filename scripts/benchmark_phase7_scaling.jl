@@ -132,6 +132,10 @@ function main()
     estimate_samples = parse(Int, get(ENV, "SAGE_PHASE7_SAMPLES", "64"))
     reference_samples = parse(Int, get(ENV, "SAGE_PHASE7_REFERENCE_SAMPLES", "20000"))
     backend_samples = parse(Int, get(ENV, "SAGE_PHASE7_BACKEND_SAMPLES", "8"))
+    sampling_scheme = Symbol(get(ENV, "SAGE_PHASE7_SAMPLING", "iid"))
+    sampling_scheme in (:iid, :antithetic) ||
+        error("SAGE_PHASE7_SAMPLING must be iid or antithetic.")
+    antithetic_sampling = sampling_scheme == :antithetic
     output_directory = abspath(get(ENV, "SAGE_PHASE7_OUTPUT", "phase7_results"))
     repetitions > 1 || error("SAGE_PHASE7_REPETITIONS must exceed one.")
     estimate_samples > 0 || error("SAGE_PHASE7_SAMPLES must be positive.")
@@ -172,6 +176,7 @@ function main()
             MersenneTwister(20270000 + 100d + branches),
             d,
             reference_samples,
+            antithetic = antithetic_sampling,
         )
         reference = analytic_sage_gradient(
             geometry,
@@ -194,6 +199,7 @@ function main()
                 MersenneTwister(20271000 + 10_000d + 100branches + repetition),
                 d,
                 estimate_samples,
+                antithetic = antithetic_sampling,
             )
             hard = hard_local_gradient(geometry, fidelity_z, target)
             ste = ste_gradient(geometry, fidelity_z, target)
@@ -241,7 +247,9 @@ function main()
 
         # Warm every backend path once so compilation does not decide the gate.
         warm = centers[1]
-        warm_samples = sample_matrix(MersenneTwister(7), d, 2)
+        warm_samples = sample_matrix(
+            MersenneTwister(7), d, 2; antithetic = antithetic_sampling,
+        )
         warm_center = lazy_branch_search(model, warm.center; store_prune_records = false)
         hard_local_backend(model, warm_center, warm.center, target)
         ste_backend(warm_center, target)
@@ -260,6 +268,7 @@ function main()
                 MersenneTwister(20272000 + 10_000d + 100branches + center_index),
                 d,
                 backend_samples,
+                antithetic = antithetic_sampling,
             )
             center_result = lazy_branch_search(
                 model,
@@ -473,6 +482,7 @@ function main()
         "estimate_samples" => estimate_samples,
         "reference_samples" => reference_samples,
         "backend_samples" => backend_samples,
+        "sampling_scheme" => string(sampling_scheme),
         "maximum_projection_parity_error" => maximum_projection_parity_error,
         "maximum_backend_gradient_parity_error" => maximum_backend_gradient_parity_error,
         "unsafe_pruning" => unsafe_pruning,
@@ -499,6 +509,7 @@ function main()
     println("branch counts: ", branch_counts)
     println("repetitions/estimate samples/reference samples/backend samples: ",
         repetitions, "/", estimate_samples, "/", reference_samples, "/", backend_samples)
+    println("sampling scheme: ", sampling_scheme)
     println()
     println("configuration\tSAGE relative bias\tSAGE RMSE\tSAGE mean cosine\tblack-box RMSE")
     for row in sage_fidelity

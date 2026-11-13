@@ -152,8 +152,20 @@ end
 task_loss(y, target) = sum(abs2, y .- target)
 task_loss_gradient(y, target) = 2.0 .* (y .- target)
 
-function sample_matrix(rng, d::Integer, count::Integer; beta::Real = 2.0)
+function sample_matrix(
+    rng,
+    d::Integer,
+    count::Integer;
+    beta::Real = 2.0,
+    antithetic::Bool = false,
+)
     count > 0 || throw(ArgumentError("sample count must be positive."))
+    antithetic && return sample_antithetic_ball_smoothing(
+        rng,
+        d,
+        count;
+        beta = beta,
+    )
     return reduce(hcat, [sample_ball_smoothing(rng, d; beta = beta) for _ in 1:count])
 end
 

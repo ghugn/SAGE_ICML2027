@@ -81,7 +81,9 @@ end
 
 Best-first search over partial disjunct assignments. Only analytic geometric
 lower bounds and solver infeasibility statuses may remove a subtree. Partial-QP
-primal objectives affect search order but never certify a bound prune.
+primal objectives affect search order but never certify a bound prune. An
+optional accepted `incumbent_result` at the same `yhat` is revalidated and can
+seed the exact search without another branch projection.
 """
 function lazy_branch_search(
     model::DisjunctiveModel,
@@ -93,6 +95,7 @@ function lazy_branch_search(
     prune_tol::Real = 1e-10,
     max_nodes::Int = 1_000_000,
     seed_incumbent::Bool = true,
+    incumbent_result = nothing,
     store_prune_records::Bool = true,
 )
     length(yhat) == model.n_outputs ||
@@ -183,6 +186,44 @@ function lazy_branch_search(
                lower_bound > incumbent.objective + Float64(prune_tol)
     end
 
+    if incumbent_result !== nothing
+        incumbent_result isa BranchProjectionResult || throw(ArgumentError(
+            "incumbent_result must be a BranchProjectionResult.",
+        ))
+        incumbent_result.accepted || throw(ArgumentError(
+            "incumbent_result must be an accepted feasible branch projection.",
+        ))
+        _validate_branch_choices(model, incumbent_result.choices)
+        length(incumbent_result.y) == model.n_outputs || throw(ArgumentError(
+            "incumbent_result output dimension does not match the model.",
+        ))
+        all(isfinite, incumbent_result.y) || throw(ArgumentError(
+            "incumbent_result output must be finite.",
+        ))
+        report = check_feasibility(
+            model, incumbent_result.y; atol = feasibility_tol,
+        )
+        branch_violation = _selected_branch_violation(
+            model, incumbent_result.y, incumbent_result.choices,
+        )
+        report.feasible && branch_violation <= feasibility_tol || throw(ArgumentError(
+            "incumbent_result is not feasible for its selected model branch.",
+        ))
+        measured_objective = 0.5 * sum(abs2, incumbent_result.y .- Float64.(yhat))
+        isapprox(
+            incumbent_result.objective,
+            measured_objective;
+            atol = max(Float64(prune_tol), 1e-10),
+            rtol = 1e-7,
+        ) || throw(ArgumentError(
+            "incumbent_result was not computed at the supplied search point.",
+        ))
+        incumbent = incumbent_result
+        push!(solved_choices, Tuple(incumbent_result.choices))
+        leaf_solves = 1
+        feasible_leaves = 1
+    end
+
     if n_rules == 0
         consider_leaf!(Int[])
         status =
@@ -224,7 +265,7 @@ function lazy_branch_search(
         )
     elseif root_relaxation.status == :unresolved
         relaxation_failures += 1
-    elseif seed_incumbent
+    elseif seed_incumbent && incumbent === nothing
         consider_leaf!(_greedy_complete_choices(model, root_relaxation.y))
     end
 
