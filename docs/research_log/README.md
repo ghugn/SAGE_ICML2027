@@ -32,4 +32,7 @@ Logs:
 - [`2026-11-13_phase6_multibranch_matched_budget.md`](2026-11-13_phase6_multibranch_matched_budget.md) —
   controlled multi-branch gradient fidelity, certification, pruning, and
   matched-budget efficiency gate.
+- [`2026-11-13_workspace_consolidation.md`](2026-11-13_workspace_consolidation.md) —
+  records why the GitHub repository is the DisjunctiveNet project and restores
+  a single canonical local working tree.
 
