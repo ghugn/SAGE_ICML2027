@@ -47,6 +47,28 @@ causing a manifest-version warning and failures in `pocl_standalone_jll`,
 queries `VERSION`, accepts a system executable only on an exact match, and
 otherwise downloads and asserts Julia 1.13.3 before package instantiation.
 
+### Successful Kaggle reproduction
+
+After enforcing Julia 1.13.3, the clean Kaggle Linux run reproduced every
+acceptance gate:
+
+- repository commit: `0403f2be3ea26daec3152e8d291efbc6047e55af`;
+- Python 3.13.18 on Linux 6.18.55 x86-64, glibc 2.39;
+- 4 logical CPUs and 32,869,288 KiB reported memory.
+
+| Stage | Result | Kaggle wall time |
+|---|---:|---:|
+| Instantiate and precompile | `PASS` | 647.034 s |
+| Foundation verification | `PASS` | 85.588 s |
+| SAGE gradient verification | `PASS` | 26.845 s |
+| Discontinuity-learning go/no-go | `PASS` | 20.790 s |
+| Full regression suite | 2671 / 2671 | 118.734 s |
+
+The complete clean run took 898.991 seconds (about 14 minutes 59 seconds).
+Verification after the one-time 647.034-second environment setup took 251.957
+seconds. Numerical SAGE outputs matched the local run, including zero
+backend/direct parity error and 10/10 successful discontinuity crossings.
+
 ## Local verification before commit
 
 Commands were run against the migrated repository root with Julia 1.13.3:
