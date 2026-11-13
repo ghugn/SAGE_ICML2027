@@ -5,18 +5,19 @@ neural networks with mixed logical-linear constraints.
 
 > **Research status (2026-11-13):** the certified foundation, lazy search,
 > switching certificate, proposal-faithful SAGE estimator, and controlled
-> scalar discontinuity-learning test are implemented. This is not yet evidence
-> of superiority on real datasets. See [`docs/research_log`](docs/research_log)
-> for the paper-facing audit trail.
+> scalar and multi-branch matched-budget gates are implemented. The first 2D
+> eight-branch slice passes, but this is not yet evidence of superiority on
+> real datasets or large-scale problems. See
+> [`docs/research_log`](docs/research_log) for the paper-facing audit trail.
 
 ## Kaggle reproduction
 
 Upload and run [`SAGE_Kaggle_Reproducibility.ipynb`](SAGE_Kaggle_Reproducibility.ipynb)
 with Internet enabled. The notebook installs a pinned Julia release, clones this
 repository, instantiates dependencies, and runs the foundation gate, SAGE
-gradient verification, discontinuity-learning go/no-go benchmark, and full
-test suite. A GPU is not required because the current certified search and QP
-backend are CPU workloads.
+gradient verification, discontinuity-learning go/no-go benchmark, and the
+multi-branch matched-budget benchmark before the full test suite. A GPU is not
+required because the current certified search and QP backend are CPU workloads.
 
 The package lets users define constraints of the form
 
@@ -168,6 +169,17 @@ Reproduce the analytic and Monte Carlo fidelity report with:
 ```bash
 julia --project=. scripts/verify_sage_gradient.jl
 ```
+
+Reproduce the Phase 6 controlled multi-branch fidelity and efficiency gate:
+
+```bash
+julia --project=. scripts/benchmark_multibranch_matched_budget.jl
+```
+
+This benchmark uses the same compact density, fixed radius and samples for
+SAGE and black-box smoothing. It reports bias, variance, cosine similarity,
+certificate/pruning rates, solver-call counts, wall time and original-logic
+feasibility. Its result is a controlled gate, not a dataset-level claim.
 
 ---
 

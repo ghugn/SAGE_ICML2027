@@ -29,4 +29,7 @@ Logs:
   controlled go/no-go test of whether SAGE escapes a dead fixed-branch gradient.
 - [`2026-11-13_github_migration.md`](2026-11-13_github_migration.md) — clean
   GitHub migration, Kaggle runner, and pre-push verification record.
+- [`2026-11-13_phase6_multibranch_matched_budget.md`](2026-11-13_phase6_multibranch_matched_budget.md) —
+  controlled multi-branch gradient fidelity, certification, pruning, and
+  matched-budget efficiency gate.
 
