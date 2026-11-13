@@ -194,3 +194,12 @@ The next phase should freeze this implementation, choose one small real task,
 and compare hard local, STE, black-box smoothing and SAGE using identical model
 initialization, data splits, optimizer budget and seeds. It must report task
 quality, logical feasibility, end-to-end time, solver work, and failure cases.
+
+## Subsequent Phase 8 certificate refinement
+
+Phase 8 added a safe pointwise reference-dominance proof for samples where the
+radius-wide certificate is inconclusive. Rerunning this Phase 7 gate preserved
+every reference, fidelity, variance, RMSE, parity and feasibility value while
+reducing SAGE global searches from `48` to `23` out of `96` black-box searches.
+The local wall-time ratio was `0.8825`. See the Phase 8 log for the proof,
+retained initial failure and full backward-compatibility audit.

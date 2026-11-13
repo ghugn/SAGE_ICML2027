@@ -117,7 +117,8 @@ end
         store_records = true,
     )
     @test estimate.status == :ok
-    @test estimate.lazy_global_searches == size(samples, 2)
+    @test estimate.lazy_global_searches + estimate.sample_stability_certificates ==
+        size(samples, 2)
     @test estimate.restricted_global_searches == 0
     @test isapprox(estimate.gradient, analytic.gradient; atol = 1e-6)
     @test all(check_feasibility(model, record.global_y).feasible for record in estimate.records)

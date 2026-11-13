@@ -11,17 +11,20 @@ neural networks with mixed logical-linear constraints.
 > antithetic sampling; it preserves exact feasibility, reduces global searches
 > by 50%, and reduces aggregate estimator variance. Backend timing is currently
 > near parity: local runs were slightly slower while the recorded Kaggle run
-> gave a `0.996x` SAGE/black-box ratio. This is not yet evidence of
-> superiority on real datasets or large-scale problems. See
+> gave a `0.996x` SAGE/black-box ratio. The first five-seed UCI Iris pilot now
+> passes: SAGE has the lowest mean test MSE, 89% fewer perturbed global searches
+> and a `0.667x` training-time ratio versus matched black-box smoothing. Its
+> paired confidence intervals still include zero, so this is promising pilot
+> evidence rather than broad real-data superiority. See
 > [`docs/research_log`](docs/research_log) for the paper-facing audit trail.
 
 ## Kaggle reproduction
 
 Upload and run [`SAGE_Kaggle_Reproducibility.ipynb`](SAGE_Kaggle_Reproducibility.ipynb)
 with Internet enabled. The notebook installs a pinned Julia release, clones this
-repository and instantiates dependencies. `RUN_MODE = "phase7"` runs the
-completed controlled scaling gate and retains its CSV/JSON evidence;
-`RUN_MODE = "full"` runs every accepted gate and the full regression suite. A GPU is not required
+repository and instantiates dependencies. `RUN_MODE = "phase8"` runs the
+five-seed UCI Iris pilot; `RUN_MODE = "phase7"` runs the controlled scaling
+gate; `RUN_MODE = "full"` runs every accepted gate and the full regression suite. A GPU is not required
 because the current certified search and QP backend are CPU workloads.
 
 The package lets users define constraints of the form
@@ -208,6 +211,18 @@ high-budget reference estimates, dimension-aware antithetic compact-`q`
 sampling, controlled one-factor scaling slices, repeated timing, and the
 proposal's variance-or-total-computation efficiency decision. It currently
 reports `PHASE7_COMPLETE=PASS`; the separate wall-time sub-gate remains `FAIL`.
+
+Run the Phase 8 real-data pilot:
+
+```bash
+julia --project=. scripts/benchmark_phase8_iris.jl
+```
+
+This uses the committed CC BY 4.0 UCI Iris data, train-only species-box
+constraints, five stratified seeds and matched black-box/SAGE perturbations.
+It saves per-seed runs, trajectories and solver-work diagnostics and currently
+reports `PHASE8_IRIS_PILOT=PASS`. See the research log for the retained initial
+failure, pointwise certificate proof, confidence intervals and limitations.
 
 ---
 

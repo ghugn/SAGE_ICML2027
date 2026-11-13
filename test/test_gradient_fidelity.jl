@@ -139,6 +139,7 @@ end
     @test estimate.reference_branch_solves == 2
     @test estimate.perturbed_global_searches == 0
     @test estimate.competitor_branch_solves == 0
+    @test estimate.sample_stability_certificates == 0
     @test estimate.switching_samples == 0
     @test all(record.residual == 0.0 for record in estimate.records)
     @test all(record.correction == [0.0] for record in estimate.records)
@@ -254,7 +255,10 @@ end
     @test estimate.status == :ok
     @test isapprox(only(estimate.gradient), analytic_gradient; atol = 0.03)
     @test estimate.switching_samples == 9
-    @test estimate.perturbed_global_searches == sample_count
-    @test estimate.competitor_branch_solves == sample_count
+    @test estimate.perturbed_global_searches +
+        estimate.sample_stability_certificates == sample_count
+    @test estimate.sample_stability_certificates > 0
+    @test estimate.perturbed_global_searches >= estimate.switching_samples
+    @test estimate.competitor_branch_solves == estimate.perturbed_global_searches
 end
 

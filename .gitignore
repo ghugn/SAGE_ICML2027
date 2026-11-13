@@ -40,7 +40,9 @@ sage_reproduction_logs/
 sage_reproduction_bundle.zip
 phase7_results*/
 phase7_complete_results/
+phase8_iris_results*/
 tmp_phase7*/
+tmp_phase8*/
 
 # OS/editor
 .DS_Store

@@ -49,4 +49,8 @@ Logs:
 - [`2026-11-13_phase7_kaggle_verification.md`](2026-11-13_phase7_kaggle_verification.md) —
   independent four-CPU Kaggle reproduction of commit `96a3f74`, including all
   Phase 7 acceptance metrics and the timing-variability interpretation.
+- [`2026-11-13_phase8_iris_pilot.md`](2026-11-13_phase8_iris_pilot.md) —
+  pre-registers and records the first real-data pilot: train-only Iris species
+  boxes, exact feasible forwards, matched training budgets and paired 5-seed
+  comparisons of hard-local, STE, black-box smoothing and SAGE.
 

@@ -30,6 +30,7 @@ struct SAGEEstimate
     reference_branch_solves::Int
     perturbed_global_searches::Int
     competitor_branch_solves::Int
+    sample_stability_certificates::Int
     restricted_global_searches::Int
     lazy_global_searches::Int
     lazy_leaf_solves::Int
@@ -41,6 +42,22 @@ struct SAGEEstimate
 end
 
 is_certified(estimate::SAGEEstimate) = estimate.status == :ok
+
+function _reference_dominates_competitors(
+    model::DisjunctiveModel,
+    point::Vector{Float64},
+    reference::BranchProjectionResult,
+    competitor_groups::Vector{CompetitorGroup},
+    tolerance::Float64,
+)
+    # Each geometric value is a certified lower bound for the complete
+    # competitor subtree. Strict dominance also preserves deterministic ties.
+    for group in competitor_groups
+        lower_bound = geometric_lower_bound(model, point, group.assignments)
+        lower_bound > reference.objective + tolerance || return false
+    end
+    return true
+end
 
 function _resolve_smoothing_samples(
     rng::AbstractRNG,
@@ -152,7 +169,7 @@ function sage_gradient(
     stability.center_status == :optimal ||
         return SAGEEstimate(
             Float64[], :center_uncertified, center, Float64(radius), Int[],
-            stability, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            stability, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             (time_ns() - started) / 1e9, SAGESampleRecord[],
         )
 
@@ -168,6 +185,7 @@ function sage_gradient(
     reference_solves = 0
     global_searches = 0
     competitor_solves = 0
+    sample_certificates = 0
     restricted_searches = 0
     lazy_searches = 0
     lazy_leaf_solves = 0
@@ -213,7 +231,18 @@ function sage_gradient(
         residual = 0.0
         switched = false
 
-        if !certifies_stability(stability)
+        if !certifies_stability(stability) && _reference_dominates_competitors(
+            model,
+            w,
+            reference,
+            relevant_groups,
+            max(Float64(certificate_tol), Float64(tie_tol)),
+        )
+            # The fixed reference branch is certified globally optimal at this
+            # sampled point. Eq. (18) has zero residual, so no global solve is
+            # needed even though the whole perturbation ball was inconclusive.
+            sample_certificates += 1
+        elseif !certifies_stability(stability)
             global_searches += 1
             relevant_count = 1 + sum(group.branch_count for group in relevant_groups; init = 0)
             use_restricted = global_strategy == :restricted ||
@@ -303,6 +332,7 @@ function sage_gradient(
         reference_solves,
         global_searches,
         competitor_solves,
+        sample_certificates,
         restricted_searches,
         lazy_searches,
         lazy_leaf_solves,
