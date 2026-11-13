@@ -135,9 +135,9 @@ PHASE6_MATCHED_BUDGET=PASS
 
 ## Independent Kaggle reproduction
 
-Run identifier: `20261113_112355_phase6`  
-Git commit executed: `b572db043c302fe2ba87adac74242d1eccd2f071`  
-Environment: Kaggle Linux x86-64, Julia 1.13.3, Python 3.13.18, 4 CPUs,
+- Run identifier: `20261113_112355_phase6`
+- Git commit executed: `b572db043c302fe2ba87adac74242d1eccd2f071`
+- Environment: Kaggle Linux x86-64, Julia 1.13.3, Python 3.13.18, 4 CPUs,
 32,869,296 KiB reported memory, CPU-only.
 
 The fresh session instantiated and precompiled the pinned environment in
