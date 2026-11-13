@@ -9,8 +9,9 @@ neural networks with mixed logical-linear constraints.
 > The original fixed-`N=64` Phase 7 smoke test remains an honest failure. The
 > completed gate uses independent reference checks and dimension-aware
 > antithetic sampling; it preserves exact feasibility, reduces global searches
-> by 50%, and reduces aggregate estimator variance, although median wall time is
-> still approximately 7% above black-box smoothing in the final local run. This is not yet evidence of
+> by 50%, and reduces aggregate estimator variance. Backend timing is currently
+> near parity: local runs were slightly slower while the recorded Kaggle run
+> gave a `0.996x` SAGE/black-box ratio. This is not yet evidence of
 > superiority on real datasets or large-scale problems. See
 > [`docs/research_log`](docs/research_log) for the paper-facing audit trail.
 

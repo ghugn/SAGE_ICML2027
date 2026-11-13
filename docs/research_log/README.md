@@ -46,4 +46,7 @@ Logs:
   completes the controlled scaling gate with tighter safe geometry, exact lazy
   competitor search, independent reference checks, dimension-aware antithetic
   sampling, and a proposal-faithful variance-or-computation decision.
+- [`2026-11-13_phase7_kaggle_verification.md`](2026-11-13_phase7_kaggle_verification.md) —
+  independent four-CPU Kaggle reproduction of commit `96a3f74`, including all
+  Phase 7 acceptance metrics and the timing-variability interpretation.
 
