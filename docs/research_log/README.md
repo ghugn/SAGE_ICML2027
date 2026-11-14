@@ -88,4 +88,8 @@ Logs:
   pre-registers an exact-importance multiscale proposal that separates
   certified local samples from geometry-focused boundary samples without
   changing the Phase 10 target smoothing objective.
+- [`2026-11-14_phase12_head_to_head.md`](2026-11-14_phase12_head_to_head.md) —
+  freezes the direct hard-local/STE/black-box/fixed-geometry/multiscale
+  comparison, shared switching-exposure strata and matched-step plus
+  matched-time protocols.
 

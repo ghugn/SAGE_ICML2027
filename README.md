@@ -38,7 +38,13 @@ neural networks with mixed logical-linear constraints.
 > local samples from geometry-focused samples. On the frozen five-seed
 > Job-Shop pilot it reduces global searches by 57.5% versus black-box and by
 > 26.1% versus strengthened fixed geometry, with exact feasibility; quality
-> intervals still cross zero. The Phase 9 result has been independently reproduced on Kaggle at
+> intervals still cross zero. Phase 12 closes the heuristic-control gap by
+> rerunning hard-local, STE, black-box, fixed geometry and multiscale from the
+> same initialization. At matched updates multiscale is statistically tied
+> with both heuristics while retaining the Phase 11 search reduction. Under a
+> calibrated-time replay, cheap STE and hard-local use almost twice as many
+> updates and obtain lower loss; this limitation is part of the accepted
+> result, not hidden. The Phase 9 result has been independently reproduced on Kaggle at
 > commit `f5dba1e`. See [`docs/SAGE_ALPHA.md`](docs/SAGE_ALPHA.md) and
 > [`docs/research_log`](docs/research_log) for the paper-facing audit trail.
 
@@ -46,8 +52,9 @@ neural networks with mixed logical-linear constraints.
 
 Upload and run [`SAGE_Kaggle_Reproducibility.ipynb`](SAGE_Kaggle_Reproducibility.ipynb)
 with Internet enabled. The notebook installs a pinned Julia release, clones this
-repository and instantiates dependencies. `RUN_MODE = "phase11"` (the default)
-runs the certified-multiscale Job-Shop gate; `RUN_MODE = "phase10"` reproduces
+repository and instantiates dependencies. `RUN_MODE = "phase12"` (the default)
+runs the five-method matched Job-Shop comparison; `RUN_MODE = "phase11"` runs
+the certified-multiscale mechanism gate; `RUN_MODE = "phase10"` reproduces
 the recorded negative fixed-radius diagnostic; `RUN_MODE = "phase9"`
 runs the accepted cooling-control pilot; `RUN_MODE = "alpha"` runs
 the pre-registered geometry-aware novelty gate; `RUN_MODE = "phase8"` runs the
@@ -334,6 +341,24 @@ also uses `0.943x` fixed geometry's complete branch solves, retains ESS
 `2.822/4`, and passes exact-feasibility gates. Its accuracy improvement is not
 statistically established. See
 [`docs/research_log/2026-11-14_phase11_certified_multiscale.md`](docs/research_log/2026-11-14_phase11_certified_multiscale.md).
+
+Run the Phase 12 direct heuristic-control comparison:
+
+```bash
+SAGE_PHASE12_PROFILE=pilot julia --project=. scripts/benchmark_phase12_head_to_head.jl
+```
+
+Phase 12 trains hard-local, STE, black-box, fixed geometry SAGE and certified
+multiscale SAGE from identical pretrained weights. Its primary table matches
+six updates; a secondary calibrated-time replay gives cheap heuristics more
+updates. OOD instances are split once from common pretrained exact-switch
+probes, then shared by every method. The frozen pilot reports
+`PHASE12_HEAD_TO_HEAD=PASS`: multiscale remains within the 10% non-inferiority
+margin on full and higher-switch OOD strata and reduces global searches by
+57.5% versus black-box, but neither paired interval establishes accuracy
+superiority. In the time-calibrated replay, STE and hard-local achieve lower
+loss. See
+[`docs/research_log/2026-11-14_phase12_head_to_head.md`](docs/research_log/2026-11-14_phase12_head_to_head.md).
 
 ---
 

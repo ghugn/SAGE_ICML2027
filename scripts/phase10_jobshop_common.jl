@@ -18,6 +18,7 @@ export evaluate_network
 export initialize_network
 export prepare_problem
 export pretrain_network
+export switching_exposure_partition
 export train_method
 
 Base.@kwdef struct JobShopConfig
@@ -726,6 +727,74 @@ function evaluate_network(
         exact_order_agreement = constrained ? exact_order_matches / count : NaN,
         maximum_violation = maximum_violation,
         unresolved = unresolved,
+    )
+end
+
+"""
+    switching_exposure_partition(network, split, seed; radius, samples)
+
+Build a method-independent OOD difficulty partition from a common pretrained
+network. Every compact-`q` probe is solved exactly; an instance score is the
+fraction of probes whose winning branch differs from its center winner. The
+lower and upper ranked halves use a deterministic instance-index tie break.
+This is an evaluation diagnostic only and never changes training or sampling.
+"""
+function switching_exposure_partition(
+    network,
+    split::JobShopSplit,
+    seed::Integer;
+    radius::Real,
+    samples::Int,
+)
+    isfinite(radius) && radius > 0 || throw(ArgumentError(
+        "switching audit radius must be finite and positive.",
+    ))
+    samples > 0 && iseven(samples) || throw(ArgumentError(
+        "switching audit samples must be a positive even integer.",
+    ))
+    count = size(split.inputs, 2)
+    count >= 2 || throw(ArgumentError("switching audit requires at least two instances."))
+    scores = zeros(count)
+    searches = 0
+    for index in 1:count
+        point, _ = _forward(network, split.inputs[:, index])
+        instance = split.instances[index]
+        center = lazy_branch_search(instance.model, point; store_prune_records = false)
+        center.status == :optimal || error("Switching audit center search unresolved.")
+        center.report !== nothing && center.report.feasible || error(
+            "Switching audit center output is not exact-feasible.",
+        )
+        rng = MersenneTwister(1_280_000_000 + 100_000Int(seed) + index)
+        perturbations = sample_antithetic_ball_smoothing(
+            rng, length(point), samples; beta = 2.0,
+        )
+        switches = 0
+        for column in axes(perturbations, 2)
+            result = lazy_branch_search(
+                instance.model,
+                point .+ Float64(radius) .* perturbations[:, column];
+                store_prune_records = false,
+            )
+            result.status == :optimal || error("Switching audit perturbation unresolved.")
+            result.report !== nothing && result.report.feasible || error(
+                "Switching audit perturbation is not exact-feasible.",
+            )
+            switches += result.choices != center.choices
+            searches += 1
+        end
+        scores[index] = switches / samples
+    end
+    order = sortperm(1:count; by = index -> (scores[index], index))
+    lower_count = fld(count, 2)
+    lower = sort(order[1:lower_count])
+    higher = sort(order[(lower_count + 1):end])
+    return (
+        lower = lower,
+        higher = higher,
+        lower_rate = mean(scores[lower]),
+        higher_rate = mean(scores[higher]),
+        scores = scores,
+        searches = searches,
     )
 end
 
