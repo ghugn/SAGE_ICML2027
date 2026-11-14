@@ -448,7 +448,12 @@ Each seed/method is trained once to 1024 updates and checkpointed at
 `16/64/256/1024` updates (`1/4/16/64` exact-training epochs). The runner emits
 `PHASE16_LONG_HORIZON=PASS` when the full experiment is safe and complete, plus
 an independent `PHASE16_CROSSOVER=OBSERVED` or `NOT_OBSERVED` scientific
-answer. The full pilot is intentionally not run on the development machine.
+answer. Every completed seed/method is cached atomically under the selected
+output directory and is loaded on restart. The Kaggle notebook keeps the
+stable `PHASE16_RUN_NAME = "phase16_full_resume"`; leave it unchanged to
+resume the same run and change it only to start a clean experiment. A progress
+heartbeat is printed every 64 updates. The full pilot is intentionally not run
+on the development machine.
 See
 [`docs/research_log/2026-11-14_phase16_long_horizon.md`](docs/research_log/2026-11-14_phase16_long_horizon.md).
 

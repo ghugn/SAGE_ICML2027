@@ -126,3 +126,29 @@ monotone for every method, and all exact outputs remained feasible.
   registration and the eventual Kaggle CSV/JSON bundle preserve the paper
   audit trail;
 - the 1024-step five-seed pilot was deliberately not executed locally.
+
+## 2026-11-15 restart hardening
+
+An interrupted long CPU run exposed an operational gap: accumulated CSVs
+survived after each completed method, but restarting the runner did not consume
+them and the timestamped notebook directory prevented automatic continuation.
+This is an evaluation-infrastructure defect, not a change to the SAGE
+estimator, certificate, proposal distribution or adaptive policy.
+
+The runner now:
+
+- writes one atomic serialized cache after every completed `seed-method` pair;
+- validates the profile, seed, method, horizon, sample budget, radius and
+  learning rate before loading a cached result;
+- reconstructs the accumulated CSV/JSON evidence from validated caches on
+  restart and skips the corresponding expensive training calls;
+- prints a flushed heartbeat at every recorded checkpoint/evaluation interval
+  (64 updates in the frozen pilot), including elapsed time and global searches;
+- uses a stable, user-visible `PHASE16_RUN_NAME` in the Kaggle notebook so a
+  kernel restart targets the same output directory.
+
+The recovery boundary is deliberately conservative: the currently executing
+method is repeated after interruption, while every fully completed method is
+reused. The frozen five-method, five-seed, 1024-update scientific design and
+all acceptance criteria remain unchanged. This hardening is evaluation-only
+and must not be described as a methodological contribution.

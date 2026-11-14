@@ -1139,6 +1139,7 @@ function train_method(
     max_steps::Int = typemax(Int),
     adaptive_policy::AdaptiveSAGEPolicy = AdaptiveSAGEPolicy(),
     checkpoint_steps::AbstractVector{<:Integer} = Int[],
+    progress_callback = nothing,
 )
     method in (
         :hard_local, :ste, :blackbox, :sage_cert, :sage_geometry,
@@ -1194,6 +1195,7 @@ function train_method(
             adaptive_maximum_calls = counters.adaptive_maximum_calls,
             adaptive_estimation_samples = counters.adaptive_estimation_samples,
         ))
+        progress_callback === nothing || progress_callback(last(trajectory))
     end
 
     record!(0, 0.0)

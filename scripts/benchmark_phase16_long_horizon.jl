@@ -1,4 +1,5 @@
 using DisjunctiveNet
+using Serialization
 using Statistics
 
 include(joinpath(@__DIR__, "phase10_jobshop_common.jl"))
@@ -19,6 +20,26 @@ function write_csv(path, columns, rows)
             println(io, join((csv_value(getproperty(row, column)) for column in columns), ','))
         end
     end
+end
+
+function atomic_serialize(path, value)
+    temporary_path = path * ".tmp"
+    open(temporary_path, "w") do io
+        serialize(io, value)
+        flush(io)
+    end
+    mv(temporary_path, path; force = true)
+    return path
+end
+
+function load_method_cache(path, expected_signature)
+    payload = open(deserialize, path)
+    hasproperty(payload, :signature) || error("Invalid Phase 16 cache at $(path).")
+    payload.signature == expected_signature || error(
+        "Phase 16 cache signature mismatch at $(path). Change the output " *
+        "directory for a fresh run.",
+    )
+    return payload
 end
 
 json_escape(value) = replace(
@@ -144,6 +165,31 @@ function main()
     audit_path = joinpath(output_directory, "phase16_switching_audit.csv")
     progress_path = joinpath(output_directory, "phase16_progress.json")
     summary_path = joinpath(output_directory, "phase16_summary.json")
+    cache_directory = joinpath(output_directory, "completed_methods")
+    mkpath(cache_directory)
+
+    function persist_progress!(seed, label)
+        isempty(rows) || write_csv(run_path, propertynames(first(rows)), rows)
+        isempty(trajectories) || write_csv(
+            trajectory_path, propertynames(first(trajectories)), trajectories,
+        )
+        isempty(audit_rows) || write_csv(
+            audit_path, propertynames(first(audit_rows)), audit_rows,
+        )
+        progress = Dict{String, Any}(
+            "profile" => string(profile),
+            "last_completed_seed" => seed,
+            "last_completed_method" => string(label),
+            "completed_method_runs" => length(rows) ÷ length(setup.horizons),
+            "target_method_runs" => length(setup.seeds) * length(labels),
+            "completed_checkpoint_rows" => length(rows),
+            "target_checkpoint_rows" => length(setup.seeds) * length(labels) *
+                length(setup.horizons),
+        )
+        open(progress_path, "w") do io
+            println(io, json_value(progress))
+        end
+    end
 
     warm_config = JobShopConfig(n_jobs = 3, n_machines = 4)
     warm = prepare_problem(
@@ -191,6 +237,44 @@ function main()
         execution_order = circshift(collect(labels), -shift)
         for label in execution_order
             spec = method_spec(label)
+            signature = (
+                schema = 1,
+                profile = string(profile),
+                seed = seed,
+                method = string(label),
+                maximum_horizon = maximum_horizon,
+                horizons = copy(setup.horizons),
+                samples = spec.samples,
+                radius = setup.radius,
+                learning_rate = setup.learning_rate,
+            )
+            cache_path = joinpath(
+                cache_directory, "seed_$(seed)_$(label).jls",
+            )
+            if isfile(cache_path)
+                payload = load_method_cache(cache_path, signature)
+                append!(rows, payload.rows)
+                append!(trajectories, payload.trajectories)
+                println(
+                    "[phase16-resume] seed=$(seed) method=$(label) " *
+                    "loaded=$(cache_path)",
+                )
+                flush(stdout)
+                persist_progress!(seed, label)
+                continue
+            end
+            row_start = length(rows) + 1
+            trajectory_start = length(trajectories) + 1
+            progress_callback = function (item)
+                item.step == 0 && return
+                println(
+                    "[phase16-progress] seed=$(seed) method=$(label) " *
+                    "step=$(item.step)/$(maximum_horizon) " *
+                    "seconds=$(round(item.elapsed_seconds; digits = 1)) " *
+                    "searches=$(item.perturbed_global_searches)",
+                )
+                flush(stdout)
+            end
             result = train_method(
                 problem, pretrained, spec.backend, seed;
                 epochs = cld(maximum_horizon, setup.train_size),
@@ -201,6 +285,7 @@ function main()
                 evaluation_interval = setup.evaluation_interval,
                 adaptive_policy = policy,
                 checkpoint_steps = setup.horizons,
+                progress_callback = progress_callback,
             )
             for item in result.trajectory
                 push!(trajectories, (
@@ -257,22 +342,15 @@ function main()
                 "searches=$(result.perturbed_global_searches)",
             )
             flush(stdout)
-            write_csv(run_path, propertynames(first(rows)), rows)
-            write_csv(trajectory_path, propertynames(first(trajectories)), trajectories)
-            write_csv(audit_path, propertynames(first(audit_rows)), audit_rows)
-            progress = Dict{String, Any}(
-                "profile" => string(profile),
-                "last_completed_seed" => seed,
-                "last_completed_method" => string(label),
-                "completed_method_runs" => length(rows) ÷ length(setup.horizons),
-                "target_method_runs" => length(setup.seeds) * length(labels),
-                "completed_checkpoint_rows" => length(rows),
-                "target_checkpoint_rows" => length(setup.seeds) * length(labels) *
-                    length(setup.horizons),
+            atomic_serialize(
+                cache_path,
+                (
+                    signature = signature,
+                    rows = copy(rows[row_start:end]),
+                    trajectories = copy(trajectories[trajectory_start:end]),
+                ),
             )
-            open(progress_path, "w") do io
-                println(io, json_value(progress))
-            end
+            persist_progress!(seed, label)
         end
     end
 
