@@ -73,4 +73,8 @@ Logs:
 - [`2026-11-14_phase9_cooling_control.md`](2026-11-14_phase9_cooling_control.md) —
   live audit trail for the native-disjunction cooling-control reconstruction,
   baseline recovery, frozen gates and SAGE comparison.
+- [`2026-11-14_phase9_kaggle_verification.md`](2026-11-14_phase9_kaggle_verification.md) —
+  independent four-CPU Kaggle reproduction of commit `f5dba1e`, including
+  exact feasibility, paired uncertainty, cross-platform solver-count drift and
+  the 65.04% geometry-SAGE global-search reduction.
 

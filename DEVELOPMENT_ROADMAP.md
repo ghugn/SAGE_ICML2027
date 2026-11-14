@@ -320,7 +320,8 @@ under matched initialization and perturbation budgets. It passes its safety,
 native-disjunction, learning, matched-quality, compute and ESS gates: all exact
 forwards have 100% IID/OOD CSAT and geometry SAGE reduces perturbed global
 searches by 65.04% while matching mean black-box OOD quality. The paired MSE
-interval includes zero, so superiority is not claimed.
+interval includes zero, so superiority is not claimed. Commit `f5dba1e` has
+also reproduced this frozen decision on a four-CPU Kaggle Linux environment.
 
 PBMC3k and robot/energy applications remain later tasks. Nonlinear convex or
 intrinsically nonconvex extensions must not be silently claimed from the current

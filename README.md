@@ -27,7 +27,8 @@ neural networks with mixed logical-linear constraints.
 > MSE (`0.04178` versus `0.04385`). Its paired 95% interval includes zero and
 > the public upstream repository omits the original experiment constants, so
 > this is explicitly a paper-spec reconstruction rather than a reproduced
-> paper result. See [`docs/SAGE_ALPHA.md`](docs/SAGE_ALPHA.md) and
+> paper result. The same frozen result has now been independently reproduced
+> on Kaggle at commit `f5dba1e`. See [`docs/SAGE_ALPHA.md`](docs/SAGE_ALPHA.md) and
 > [`docs/research_log`](docs/research_log) for the paper-facing audit trail.
 
 ## Kaggle reproduction
