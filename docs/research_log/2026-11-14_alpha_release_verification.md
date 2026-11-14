@@ -2,8 +2,8 @@
 
 Date: 2026-11-14
 
-Status: local release **PASS**; an independent Kaggle alpha-mode rerun remains
-required before calling the tagged alpha externally reproduced.
+Status: local release **PASS** and independent Kaggle alpha-mode reproduction
+**PASS** at the exact tagged commit `32432546939609b415e29aa828702eb2b7655b91`.
 
 ## Release boundary
 
@@ -48,10 +48,11 @@ both the failed and completed Phase 7 scaling gates, Phase 8 Iris, Kaggle
 verifications, workspace migration/consolidation and this alpha novelty gate.
 Negative results have not been deleted or rewritten as passes.
 
-## Remaining external verification
+## Independent external verification
 
 The Kaggle notebook now defaults to `RUN_MODE = 'alpha'` and writes the novelty
-CSV/JSON evidence into the reproduction bundle. The tag `v0.2.0-alpha.1`
-identifies the packaged code, but a Kaggle alpha run should still be recorded so
-its final summary names the exact tag commit. Until then the alpha is locally
-verified, not independently reproduced.
+CSV/JSON evidence into the reproduction bundle. The four-CPU Kaggle run completed
+with `SAGE_ALPHA_NOVELTY=PASS` in 28.399 seconds after environment setup, and its
+final summary names the exact `v0.2.0-alpha.1` commit. The tagged alpha can
+therefore be described as independently reproduced for its controlled novelty
+gate. This does not broaden the claim to arbitrary datasets or architectures.

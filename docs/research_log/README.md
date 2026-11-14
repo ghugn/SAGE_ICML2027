@@ -63,4 +63,8 @@ Logs:
 - [`2026-11-14_alpha_release_verification.md`](2026-11-14_alpha_release_verification.md) —
   records the `0.2.0-alpha.1` package boundary and the final local regression
   matrix across unit tests and Phases 6-8.
+- [`2026-11-14_alpha_kaggle_verification.md`](2026-11-14_alpha_kaggle_verification.md) —
+  independent four-CPU Kaggle reproduction of tag `v0.2.0-alpha.1`, including
+  density preservation, variance reduction, exact parity and complete solver
+  work.
 
