@@ -146,6 +146,9 @@ The runner now:
   (64 updates in the frozen pilot), including elapsed time and global searches;
 - uses a stable, user-visible `PHASE16_RUN_NAME` in the Kaggle notebook so a
   kernel restart targets the same output directory.
+- executes a two-pass smoke preflight before the multi-hour pilot and requires
+  the second pass to emit `[phase16-resume]`, proving that a separate Julia
+  process can consume the completed-method caches before expensive work begins.
 
 The recovery boundary is deliberately conservative: the currently executing
 method is repeated after interruption, while every fully completed method is
