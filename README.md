@@ -21,15 +21,22 @@ neural networks with mixed logical-linear constraints.
 > retained 44.96% of the variance, and against antithetic smoothing 62.75%,
 > while cutting complete branch solves by 30% versus the uncertified base. This
 > establishes the proposed mechanism on controlled problems, not universal
-> novelty or superiority. See [`docs/SAGE_ALPHA.md`](docs/SAGE_ALPHA.md) and
+> novelty or superiority. The Phase 9 cooling-control reconstruction also
+> passes its frozen five-seed application gate: exact CSAT is 100%, geometry
+> SAGE removes 65.04% of perturbed global searches and matches black-box OOD
+> MSE (`0.04178` versus `0.04385`). Its paired 95% interval includes zero and
+> the public upstream repository omits the original experiment constants, so
+> this is explicitly a paper-spec reconstruction rather than a reproduced
+> paper result. See [`docs/SAGE_ALPHA.md`](docs/SAGE_ALPHA.md) and
 > [`docs/research_log`](docs/research_log) for the paper-facing audit trail.
 
 ## Kaggle reproduction
 
 Upload and run [`SAGE_Kaggle_Reproducibility.ipynb`](SAGE_Kaggle_Reproducibility.ipynb)
 with Internet enabled. The notebook installs a pinned Julia release, clones this
-repository and instantiates dependencies. `RUN_MODE = "alpha"` runs the
-pre-registered geometry-aware novelty gate; `RUN_MODE = "phase8"` runs the
+repository and instantiates dependencies. `RUN_MODE = "phase9"` (the default)
+runs the native-disjunction cooling-control pilot; `RUN_MODE = "alpha"` runs
+the pre-registered geometry-aware novelty gate; `RUN_MODE = "phase8"` runs the
 five-seed UCI Iris pilot; `RUN_MODE = "phase7"` runs the controlled scaling
 gate; `RUN_MODE = "full"` runs every accepted gate and the full regression suite. A GPU is not required
 because the current certified search and QP backend are CPU workloads.
@@ -261,6 +268,23 @@ constraints, five stratified seeds and matched black-box/SAGE perturbations.
 It saves per-seed runs, trajectories and solver-work diagnostics and currently
 reports `PHASE8_IRIS_PILOT=PASS`. See the research log for the retained initial
 failure, pointwise certificate proof, confidence intervals and limitations.
+
+Run the Phase 9 native-disjunction cooling-control pilot:
+
+```bash
+SAGE_PHASE9_PROFILE=pilot julia --project=. scripts/benchmark_phase9_cooling.jl
+```
+
+This reconstructs the paper-specified seven inputs, three cooling controls,
+seven input-dependent logical rules, IID/OOD distributions and `7 -> 8 -> 8 ->
+3` ReLU network. All missing numeric constants are centralized in
+`CoolingConfig`. Five matched seeds compare hard-local, STE, black-box,
+certificate SAGE and geometry SAGE from the same pretrained weights. The
+recorded gate reports `PHASE9_COOLING_PILOT=PASS`, with 100% exact IID/OOD CSAT
+and 65.04% fewer perturbed global searches for geometry SAGE than black-box.
+The paired OOD-MSE interval still includes zero. See
+[`docs/research_log/2026-11-14_phase9_cooling_control.md`](docs/research_log/2026-11-14_phase9_cooling_control.md)
+for the retained solver failure, repair, frozen gates and interpretation.
 
 ---
 

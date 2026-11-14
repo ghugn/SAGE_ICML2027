@@ -1,5 +1,6 @@
 using JuMP
 using HiGHS
+using LinearAlgebra
 import MathOptInterface as MOI
 
 """
@@ -96,6 +97,118 @@ function _build_selected_branch_model(
     return jump_model, y
 end
 
+function _analytic_branch_projection(
+    model::DisjunctiveModel,
+    yhat::AbstractVector{<:Real},
+    assignments::AbstractVector{<:Integer};
+    feasibility_tol::Real = 1e-6,
+    max_active_sets::Int = 100_000,
+)
+    n = model.n_outputs
+    inequality_rows = Vector{Vector{Float64}}()
+    inequality_bounds = Float64[]
+    equality_rows = Vector{Vector{Float64}}()
+    equality_bounds = Float64[]
+
+    function add_constraint!(constraint::LinearConstraint)
+        row = Float64.(constraint.a)
+        if constraint.sense == :<=
+            push!(inequality_rows, row)
+            push!(inequality_bounds, constraint.b)
+        elseif constraint.sense == :>=
+            push!(inequality_rows, -row)
+            push!(inequality_bounds, -constraint.b)
+        else
+            push!(equality_rows, row)
+            push!(equality_bounds, constraint.b)
+        end
+        return nothing
+    end
+
+    for coordinate in 1:n
+        if isfinite(model.lb[coordinate])
+            row = zeros(n)
+            row[coordinate] = -1.0
+            push!(inequality_rows, row)
+            push!(inequality_bounds, -model.lb[coordinate])
+        end
+        if isfinite(model.ub[coordinate])
+            row = zeros(n)
+            row[coordinate] = 1.0
+            push!(inequality_rows, row)
+            push!(inequality_bounds, model.ub[coordinate])
+        end
+    end
+    foreach(add_constraint!, model.constraints)
+    for (rule_index, choice) in enumerate(assignments)
+        choice == 0 && continue
+        foreach(add_constraint!, model.disjunctions[rule_index].disjuncts[choice])
+    end
+
+    inequalities = isempty(inequality_rows) ? zeros(0, n) :
+        reduce(vcat, permutedims.(inequality_rows))
+    equalities = isempty(equality_rows) ? zeros(0, n) :
+        reduce(vcat, permutedims.(equality_rows))
+    point = Float64.(yhat)
+    tolerance = max(Float64(feasibility_tol), 1e-9)
+    best = Ref{Union{Nothing, Vector{Float64}}}(nothing)
+    best_objective = Ref(Inf)
+    visited = Ref(0)
+
+    function consider!(active::Vector{Int})
+        visited[] += 1
+        visited[] <= max_active_sets || return nothing
+        rows = isempty(active) ? equalities : vcat(equalities, inequalities[active, :])
+        bounds = isempty(active) ? equality_bounds :
+            vcat(equality_bounds, inequality_bounds[active])
+        size(rows, 1) <= n || return nothing
+        rank(rows; atol = 1e-10) == size(rows, 1) || return nothing
+        multipliers = isempty(bounds) ? Float64[] :
+            (rows * transpose(rows)) \ (rows * point - bounds)
+        if !isempty(active)
+            all(multipliers[length(equality_bounds) + 1:end] .>= -tolerance) ||
+                return nothing
+        end
+        candidate = point - transpose(rows) * multipliers
+        all(isfinite, candidate) || return nothing
+        all(inequalities * candidate .<= inequality_bounds .+ tolerance) ||
+            return nothing
+        all(abs.(equalities * candidate .- equality_bounds) .<= tolerance) ||
+            return nothing
+        objective = 0.5 * sum(abs2, candidate .- point)
+        if objective < best_objective[]
+            best[] = candidate
+            best_objective[] = objective
+        end
+        return nothing
+    end
+
+    chosen = Int[]
+    function enumerate!(first_index::Int, remaining::Int)
+        visited[] >= max_active_sets && return nothing
+        if remaining == 0
+            consider!(chosen)
+            return nothing
+        end
+        last_index = size(inequalities, 1) - remaining + 1
+        for index in first_index:last_index
+            push!(chosen, index)
+            enumerate!(index + 1, remaining - 1)
+            pop!(chosen)
+            visited[] >= max_active_sets && break
+        end
+        return nothing
+    end
+
+    maximum_active = min(n - size(equalities, 1), size(inequalities, 1))
+    maximum_active < 0 && return nothing
+    for count in 0:maximum_active
+        enumerate!(1, count)
+        visited[] >= max_active_sets && break
+    end
+    return best[]
+end
+
 """
     project_branch(model, yhat, choices; solver=nothing, feasibility_tol=1e-6)
 
@@ -166,6 +279,66 @@ function project_branch(
             nothing,
         )
     elseif solver_status != MOI.OPTIMAL
+        # HiGHS can return OTHER_ERROR for a nearly degenerate convex QP after
+        # its candidate fails the final primal-feasibility check. Retry the
+        # identical feasible set as an LP before declaring the branch
+        # unresolved. Only an explicit LP INFEASIBLE status is used as a
+        # certificate; an LP-feasible branch still needs an exact projection.
+        fallback_started = time_ns()
+        feasibility_status = try
+            @objective(jump_model, Min, 0.0)
+            optimize!(jump_model)
+            termination_status(jump_model)
+        catch
+            :solver_error
+        end
+        if feasibility_status == MOI.INFEASIBLE
+            return BranchProjectionResult(
+                branch_choices,
+                Float64[],
+                Inf,
+                Inf,
+                feasibility_status,
+                nothing,
+                0.0,
+                solve_time + (time_ns() - fallback_started) / 1e9,
+                false,
+                true,
+                "QP status $(solver_status); LP feasibility retry certified infeasibility.",
+            )
+        end
+        if feasibility_status == MOI.OPTIMAL
+            projected = _analytic_branch_projection(
+                model,
+                yhat,
+                branch_choices;
+                feasibility_tol = feasibility_tol,
+            )
+            if projected !== nothing
+                objective = 0.5 * sum(abs2, projected .- Float64.(yhat))
+                report = check_feasibility(model, projected; atol = feasibility_tol)
+                branch_violation = _selected_branch_violation(
+                    model, projected, branch_choices,
+                )
+                accepted = report.feasible &&
+                    branch_violation <= feasibility_tol && isfinite(objective)
+                if accepted
+                    return BranchProjectionResult(
+                        branch_choices,
+                        projected,
+                        objective,
+                        sqrt(2 * objective),
+                        MOI.OPTIMAL,
+                        report,
+                        branch_violation,
+                        solve_time + (time_ns() - fallback_started) / 1e9,
+                        true,
+                        false,
+                        "QP status $(solver_status); resolved by analytic active-set fallback.",
+                    )
+                end
+            end
+        end
         return BranchProjectionResult(
             branch_choices,
             Float64[],
@@ -174,10 +347,11 @@ function project_branch(
             solver_status,
             nothing,
             Inf,
-            solve_time,
+            solve_time + (time_ns() - fallback_started) / 1e9,
             false,
             false,
-            "Branch solver did not return OPTIMAL or INFEASIBLE.",
+            "Branch QP returned $(solver_status); LP feasibility retry returned " *
+            "$(feasibility_status).",
         )
     end
 

@@ -311,22 +311,24 @@ Completed and independently recorded:
   dimension/branch scaling and a five-seed Iris end-to-end pilot;
 - SAGE Core `v0.2.0-alpha.1`, independently reproduced on Kaggle.
 
-Phase 9 moves to proposal Roadmap Stage 4 rather than adding another synthetic
-estimator variant. Its primary task is a native-disjunction cooling-control
-benchmark compatible with the original DisjunctiveNet setting. It must first
-reproduce the inherited task and baseline, then compare hard-local, STE,
-black-box, certified SAGE and geometry-aware SAGE under matched perturbation
-and solver-work budgets. Required reporting includes exact logical feasibility,
-task quality, branch decisions, gradient/learning curves, global and local
-solver calls, certificate coverage, complete proposal overhead, wall time,
-multiple seeds, paired confidence intervals and retained failures.
+Phase 9 now implements proposal Roadmap Stage 4 as a native-disjunction
+cooling-control reconstruction. The public upstream repository does not contain
+the numeric cooling experiment, so all unavailable constants are explicitly
+declared rather than described as reproduced. The frozen five-seed pilot
+compares hard-local, STE, black-box, certified SAGE and geometry-aware SAGE
+under matched initialization and perturbation budgets. It passes its safety,
+native-disjunction, learning, matched-quality, compute and ESS gates: all exact
+forwards have 100% IID/OOD CSAT and geometry SAGE reduces perturbed global
+searches by 65.04% while matching mean black-box OOD quality. The paired MSE
+interval includes zero, so superiority is not claimed.
 
 PBMC3k and robot/energy applications remain later tasks. Nonlinear convex or
 intrinsically nonconvex extensions must not be silently claimed from the current
 polyhedral backend.
 
 See `docs/research_log/2026-11-14_pre_phase9_audit.md` for the evidence map and
-entry conditions.
+entry conditions, and `docs/research_log/2026-11-14_phase9_cooling_control.md`
+for the retained solver failure, repair, frozen protocol and result.
 
 ## 11. Continuous verification commands
 

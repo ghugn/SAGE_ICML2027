@@ -70,4 +70,7 @@ Logs:
 - [`2026-11-14_pre_phase9_audit.md`](2026-11-14_pre_phase9_audit.md) — maps
   proposal equations (7)-(21), experimental requirements E1-E6 and every
   completed phase to implementation evidence, then fixes the Phase 9 scope.
+- [`2026-11-14_phase9_cooling_control.md`](2026-11-14_phase9_cooling_control.md) —
+  live audit trail for the native-disjunction cooling-control reconstruction,
+  baseline recovery, frozen gates and SAGE comparison.
 
