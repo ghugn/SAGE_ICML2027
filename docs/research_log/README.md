@@ -92,4 +92,8 @@ Logs:
   freezes the direct hard-local/STE/black-box/fixed-geometry/multiscale
   comparison, shared switching-exposure strata and matched-step plus
   matched-time protocols.
+- [`2026-11-14_phase12_kaggle_verification.md`](2026-11-14_phase12_kaggle_verification.md) —
+  independently reproduces the complete five-method Phase 12 gate on Kaggle,
+  including deterministic matched-step metrics and the platform-dependent
+  calibrated-time limitation.
 
