@@ -2,8 +2,8 @@
 
 Date: 2026-11-14
 
-Status: local release candidate **PASS**; independent Kaggle alpha-mode rerun
-and Git tag are the remaining publication steps.
+Status: local release **PASS**; an independent Kaggle alpha-mode rerun remains
+required before calling the tagged alpha externally reproduced.
 
 ## Release boundary
 
@@ -51,7 +51,7 @@ Negative results have not been deleted or rewritten as passes.
 ## Remaining external verification
 
 The Kaggle notebook now defaults to `RUN_MODE = 'alpha'` and writes the novelty
-CSV/JSON evidence into the reproduction bundle. A Kaggle alpha run should be
-recorded after the release commit is pushed so its final summary names the exact
-release commit. Only after that independent run should the alpha tag be treated
-as externally reproduced.
+CSV/JSON evidence into the reproduction bundle. The tag `v0.2.0-alpha.1`
+identifies the packaged code, but a Kaggle alpha run should still be recorded so
+its final summary names the exact tag commit. Until then the alpha is locally
+verified, not independently reproduced.
