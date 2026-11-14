@@ -13,6 +13,21 @@ struct GeometrySampleBatch
     beta::Float64
 end
 
+"""Exact multiscale proposal samples for certified-local/boundary SAGE."""
+struct CertifiedGeometrySampleBatch
+    samples::Matrix{Float64}
+    importance_weights::Vector{Float64}
+    proposal_ratios::Vector{Float64}
+    components::Vector{Symbol}
+    normals::Matrix{Float64}
+    base_weight::Float64
+    local_weight::Float64
+    geometry_weight::Float64
+    local_scale::Float64
+    focus_strength::Float64
+    beta::Float64
+end
+
 """Optimizer-derived switching normals and the branch-solve cost used to obtain them."""
 struct SwitchingGeometry
     normals::Matrix{Float64}
@@ -93,6 +108,109 @@ function geometry_proposal_ratio(
         for column in axes(unit_normals, 2)
     ) / size(unit_normals, 2)
     ratio = (1.0 - alpha) + alpha * focus_ratio
+    isfinite(ratio) && ratio > 0.0 || error("Internal nonpositive proposal ratio.")
+    return ratio
+end
+
+"""
+    scaled_ball_proposal_ratio(u, scale; beta=2)
+
+Return `p_local(u) / q(u)` when `p_local` is obtained by drawing `v ~ q` and
+setting `u = scale*v`. This is the exact Jacobian-corrected density ratio for
+the compact local component.
+"""
+function scaled_ball_proposal_ratio(
+    u::AbstractVector{<:Real},
+    scale::Real;
+    beta::Real = 2.0,
+)
+    point = Float64.(collect(u))
+    dimension = length(point)
+    dimension > 0 || throw(ArgumentError("u cannot be empty."))
+    all(isfinite, point) || throw(ArgumentError("u must be finite."))
+    radius_squared = sum(abs2, point)
+    radius_squared < 1.0 || throw(ArgumentError(
+        "scaled-ball density is defined only inside the open unit ball.",
+    ))
+    local_scale = Float64(scale)
+    isfinite(local_scale) && 0.0 < local_scale <= 1.0 || throw(ArgumentError(
+        "scale must be finite and lie in (0, 1].",
+    ))
+    isfinite(beta) && beta >= 2.0 || throw(ArgumentError(
+        "beta must be finite and at least 2.",
+    ))
+    radius_squared < local_scale^2 || return 0.0
+    radial_ratio = (1.0 - radius_squared / local_scale^2) /
+        (1.0 - radius_squared)
+    return local_scale^(-dimension) * radial_ratio^Float64(beta)
+end
+
+function _focused_geometry_ratio(
+    point::Vector{Float64},
+    unit_normals::Matrix{Float64};
+    beta::Float64,
+    focus_strength::Float64,
+)
+    coordinate_second_moment = 1.0 / (length(point) + 2.0beta + 2.0)
+    normalizer = 1.0 + focus_strength^2 * coordinate_second_moment
+    return sum(
+        (1.0 + focus_strength * dot(view(unit_normals, :, column), point))^2 /
+            normalizer
+        for column in axes(unit_normals, 2)
+    ) / size(unit_normals, 2)
+end
+
+"""
+    certified_geometry_proposal_ratio(u, normals; kwargs...)
+
+Return `p_z(u)/q(u)` for the exact Phase 11 mixture of the target compact
+density, a scaled certified-local density, and optimizer-focused geometry.
+The positive base weight preserves support over the complete target ball.
+"""
+function certified_geometry_proposal_ratio(
+    u::AbstractVector{<:Real},
+    normals;
+    beta::Real = 2.0,
+    base_weight::Real = 0.2,
+    local_weight::Real = 0.4,
+    geometry_weight::Real = 0.4,
+    local_scale::Real = 0.5,
+    focus_strength::Real = 0.9,
+)
+    point = Float64.(collect(u))
+    dimension = length(point)
+    dimension > 0 || throw(ArgumentError("u cannot be empty."))
+    all(isfinite, point) || throw(ArgumentError("u must be finite."))
+    sum(abs2, point) < 1.0 || throw(ArgumentError(
+        "proposal density is defined only inside the open unit ball.",
+    ))
+    beta_value = Float64(beta)
+    isfinite(beta_value) && beta_value >= 2.0 || throw(ArgumentError(
+        "beta must be finite and at least 2.",
+    ))
+    weights = Float64[base_weight, local_weight, geometry_weight]
+    all(weight -> isfinite(weight) && weight >= 0.0, weights) ||
+        throw(ArgumentError("mixture weights must be finite and nonnegative."))
+    weights[1] > 0.0 || throw(ArgumentError(
+        "base_weight must be positive to preserve target support.",
+    ))
+    isapprox(sum(weights), 1.0; atol = 1e-12, rtol = 0.0) ||
+        throw(ArgumentError("mixture weights must sum to one."))
+    kappa = Float64(focus_strength)
+    isfinite(kappa) && 0.0 <= kappa <= 1.0 || throw(ArgumentError(
+        "focus_strength must be finite and lie in [0, 1].",
+    ))
+    unit_normals = _normalized_geometry_normals(normals, dimension)
+    local_ratio = scaled_ball_proposal_ratio(
+        point, local_scale; beta = beta_value,
+    )
+    focus_ratio = _focused_geometry_ratio(
+        point,
+        unit_normals;
+        beta = beta_value,
+        focus_strength = kappa,
+    )
+    ratio = weights[1] + weights[2] * local_ratio + weights[3] * focus_ratio
     isfinite(ratio) && ratio > 0.0 || error("Internal nonpositive proposal ratio.")
     return ratio
 end
@@ -189,6 +307,106 @@ sample_geometry_smoothing(
     normals;
     kwargs...,
 ) = sample_geometry_smoothing(
+    Random.default_rng(), dimension, count, normals; kwargs...,
+)
+
+"""
+    sample_certified_geometry_smoothing(rng, dimension, count, normals; kwargs...)
+
+Draw exact samples from the certified multiscale proposal and return ordinary
+importance weights `q/p_z`. `local_scale*rho` is the physical local radius
+when the estimator target radius is `rho`.
+"""
+function sample_certified_geometry_smoothing(
+    rng::AbstractRNG,
+    dimension::Integer,
+    count::Integer,
+    normals;
+    beta::Real = 2.0,
+    base_weight::Real = 0.2,
+    local_weight::Real = 0.4,
+    geometry_weight::Real = 0.4,
+    local_scale::Real = 0.5,
+    focus_strength::Real = 0.9,
+)
+    d = Int(dimension)
+    n = Int(count)
+    d > 0 || throw(ArgumentError("dimension must be positive."))
+    n > 0 || throw(ArgumentError("count must be positive."))
+    unit_normals = _normalized_geometry_normals(normals, d)
+    base = Float64(base_weight)
+    local_mix = Float64(local_weight)
+    geometry = Float64(geometry_weight)
+    scale = Float64(local_scale)
+    kappa = Float64(focus_strength)
+    certified_geometry_proposal_ratio(
+        zeros(d),
+        unit_normals;
+        beta = beta,
+        base_weight = base,
+        local_weight = local_mix,
+        geometry_weight = geometry,
+        local_scale = scale,
+        focus_strength = kappa,
+    )
+
+    samples = Matrix{Float64}(undef, d, n)
+    ratios = Vector{Float64}(undef, n)
+    weights = Vector{Float64}(undef, n)
+    components = Vector{Symbol}(undef, n)
+    for column in 1:n
+        selector = rand(rng)
+        if selector < base
+            sample = sample_ball_smoothing(rng, d; beta = beta)
+            component = :base
+        elseif selector < base + local_mix
+            sample = scale .* sample_ball_smoothing(rng, d; beta = beta)
+            component = :local
+        else
+            sample = _sample_focused_ball(
+                rng,
+                unit_normals;
+                beta = Float64(beta),
+                focus_strength = kappa,
+            )
+            component = :focused
+        end
+        ratio = certified_geometry_proposal_ratio(
+            sample,
+            unit_normals;
+            beta = beta,
+            base_weight = base,
+            local_weight = local_mix,
+            geometry_weight = geometry,
+            local_scale = scale,
+            focus_strength = kappa,
+        )
+        samples[:, column] .= sample
+        ratios[column] = ratio
+        weights[column] = inv(ratio)
+        components[column] = component
+    end
+    return CertifiedGeometrySampleBatch(
+        samples,
+        weights,
+        ratios,
+        components,
+        unit_normals,
+        base,
+        local_mix,
+        geometry,
+        scale,
+        kappa,
+        Float64(beta),
+    )
+end
+
+sample_certified_geometry_smoothing(
+    dimension::Integer,
+    count::Integer,
+    normals;
+    kwargs...,
+) = sample_certified_geometry_smoothing(
     Random.default_rng(), dimension, count, normals; kwargs...,
 )
 

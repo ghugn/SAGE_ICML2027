@@ -29,6 +29,37 @@ end
 certifies_stability(certificate::SwitchingCertificate) = certificate.status == :stable
 is_certified(certificate::SwitchingCertificate) = certifies_stability(certificate)
 
+"""
+    certified_local_radius(certificate; safety_factor=0.45, max_fraction=0.95)
+
+Return a conservative local radius implied by the Phase 3 distance margin.
+The strict certificate tolerance is removed before applying `safety_factor`;
+the default `0.45 < 0.5` leaves a ten-percent buffer relative to the sufficient
+condition `margin > 2radius + certificate_tol`. A zero result means that no
+positive local ball is certified by the available bound.
+"""
+function certified_local_radius(
+    certificate::SwitchingCertificate;
+    safety_factor::Real = 0.45,
+    max_fraction::Real = 0.95,
+)
+    isfinite(safety_factor) && 0.0 < safety_factor < 0.5 ||
+        throw(ArgumentError("safety_factor must be finite and lie in (0, 0.5)."))
+    isfinite(max_fraction) && 0.0 < max_fraction <= 1.0 ||
+        throw(ArgumentError("max_fraction must be finite and lie in (0, 1]."))
+    certificate.center_status == :optimal || return 0.0
+    isfinite(certificate.minimum_margin) || return 0.0
+    certificate_tolerance = max(
+        certificate.required_margin - 2.0 * certificate.radius,
+        0.0,
+    )
+    available_margin = max(certificate.minimum_margin - certificate_tolerance, 0.0)
+    return min(
+        Float64(safety_factor) * available_margin,
+        Float64(max_fraction) * certificate.radius,
+    )
+end
+
 function Base.show(io::IO, certificate::SwitchingCertificate)
     print(
         io,

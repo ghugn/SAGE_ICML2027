@@ -92,10 +92,17 @@ mutable struct TrainingCounters
     logical_failures::Int
     effective_sample_size_sum::Float64
     effective_sample_size_count::Int
+    base_proposal_samples::Int
+    local_proposal_samples::Int
+    focused_proposal_samples::Int
+    local_radius_sum::Float64
+    local_radius_count::Int
+    positive_local_radius_calls::Int
 end
 
 TrainingCounters() = TrainingCounters(
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0,
+    0, 0, 0, 0.0, 0, 0,
 )
 
 _operation(config::JobShopConfig, job, position) =
@@ -546,7 +553,7 @@ function _gradient_for_sample(
             total .+= (residual / radius) .* ball_smoothing_score(direction; beta = 2.0)
         end
         return total ./ size(perturbations, 2), center_loss
-    elseif method in (:sage_cert, :sage_geometry)
+    elseif method in (:sage_cert, :sage_geometry, :sage_multiscale)
         estimate = if method == :sage_cert
             sage_gradient(
                 instance.model,
@@ -558,7 +565,7 @@ function _gradient_for_sample(
                 center_result = center,
                 store_records = false,
             )
-        else
+        elseif method == :sage_geometry
             sage_config = SAGEConfig(
                 radius = radius,
                 n_samples = size(perturbations, 2),
@@ -575,6 +582,69 @@ function _gradient_for_sample(
                 rng = rng,
                 center_result = center,
             )
+        else
+            boundary_certificate = switching_certificate(
+                instance.model,
+                point,
+                radius;
+                center_result = center,
+            )
+            relevant_groups = competitor_set(boundary_certificate)
+            geometry = switching_geometry(
+                instance.model,
+                point,
+                boundary_certificate.winner,
+                boundary_certificate.winner_point,
+                relevant_groups,
+            )
+            local_radius = certified_local_radius(boundary_certificate)
+            counters.local_radius_sum += local_radius
+            counters.local_radius_count += 1
+            counters.positive_local_radius_calls += local_radius > 0.0
+            counters.geometry_branch_solves += geometry.branch_solves
+            if size(geometry.normals, 2) == 0
+                sage_gradient(
+                    instance.model,
+                    point,
+                    radius,
+                    y -> _task_loss(y, instance, config),
+                    y -> _task_loss_gradient(y, instance, config);
+                    samples = perturbations,
+                    center_result = center,
+                    store_records = false,
+                )
+            else
+                has_local = local_radius > 0.0
+                local_weight = has_local ? 0.4 : 0.0
+                base_weight = has_local ? 0.2 : 0.6
+                batch = sample_certified_geometry_smoothing(
+                    rng,
+                    length(point),
+                    size(perturbations, 2),
+                    geometry.normals;
+                    beta = 2.0,
+                    base_weight = base_weight,
+                    local_weight = local_weight,
+                    geometry_weight = 0.4,
+                    local_scale = has_local ? local_radius / radius : 1.0,
+                    focus_strength = 0.9,
+                )
+                counters.base_proposal_samples += count(==(:base), batch.components)
+                counters.local_proposal_samples += count(==(:local), batch.components)
+                counters.focused_proposal_samples += count(==(:focused), batch.components)
+                sage_gradient(
+                    instance.model,
+                    point,
+                    radius,
+                    y -> _task_loss(y, instance, config),
+                    y -> _task_loss_gradient(y, instance, config);
+                    samples = batch.samples,
+                    importance_weights = batch.importance_weights,
+                    sampling = :provided,
+                    center_result = center,
+                    store_records = false,
+                )
+            end
         end
         estimate.status == :ok || error(
             "Job-shop SAGE gradient unresolved: status=$(estimate.status), " *
@@ -671,7 +741,10 @@ function train_method(
     evaluation_interval::Int = 20,
     max_steps::Int = typemax(Int),
 )
-    method in (:hard_local, :ste, :blackbox, :sage_cert, :sage_geometry) ||
+    method in (
+        :hard_local, :ste, :blackbox, :sage_cert, :sage_geometry,
+        :sage_multiscale,
+    ) ||
         throw(ArgumentError("Unsupported job-shop method $(method)."))
     samples > 0 && iseven(samples) ||
         throw(ArgumentError("samples must be a positive even integer."))
@@ -704,7 +777,9 @@ function train_method(
         perturbation_rng = MersenneTwister(
             1_070_000_000 + 100_000Int(seed) + 1_000step + index,
         )
-        perturbations = method in (:blackbox, :sage_cert, :sage_geometry) ?
+        perturbations = method in (
+            :blackbox, :sage_cert, :sage_geometry, :sage_multiscale,
+        ) ?
             sample_antithetic_ball_smoothing(
                 perturbation_rng, length(point), samples; beta = 2.0,
             ) : zeros(length(point), samples)
@@ -735,6 +810,8 @@ function train_method(
     training_seconds = (time_ns() - started) / 1e9
     mean_ess = counters.effective_sample_size_count > 0 ?
         counters.effective_sample_size_sum / counters.effective_sample_size_count : NaN
+    mean_local_radius = counters.local_radius_count > 0 ?
+        counters.local_radius_sum / counters.local_radius_count : NaN
     return (
         network = network,
         trajectory = trajectory,
@@ -757,6 +834,11 @@ function train_method(
             counters.reference_branch_solves + counters.competitor_branch_solves +
             counters.geometry_branch_solves + counters.lazy_leaf_solves,
         mean_effective_sample_size = mean_ess,
+        mean_local_radius = mean_local_radius,
+        positive_local_radius_calls = counters.positive_local_radius_calls,
+        base_proposal_samples = counters.base_proposal_samples,
+        local_proposal_samples = counters.local_proposal_samples,
+        focused_proposal_samples = counters.focused_proposal_samples,
     )
 end
 

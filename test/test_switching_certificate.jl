@@ -43,15 +43,23 @@ end
     @test wide.competitive_branches == 1
     @test length(competitor_set(wide)) == 1
     @test exhaustive_project(dm, [3.6]).choices == [2]
+    local_radius = certified_local_radius(wide)
+    @test local_radius > 0.0
+    @test wide.minimum_margin > 2local_radius +
+        max(wide.required_margin - 2wide.radius, 0.0)
+    local_certificate = switching_certificate(dm, [1.0], local_radius)
+    @test certifies_stability(local_certificate)
 
     tie = switching_certificate(dm, [3.5], 0.0)
     @test tie.status == :not_certified
     @test tie.winner == [1]
     @test tie.minimum_margin ≈ 0.0 atol = 1e-7
+    @test certified_local_radius(tie) == 0.0
 
     @test_throws ArgumentError switching_certificate(dm, [1.0], -0.1)
     @test_throws ArgumentError switching_certificate(dm, [1.0], Inf)
     @test_throws DimensionMismatch switching_certificate(dm, [1.0, 2.0], 0.1)
+    @test_throws ArgumentError certified_local_radius(wide; safety_factor = 0.5)
     stale_center = exhaustive_project(dm, [1.0])
     @test_throws ArgumentError switching_certificate(
         dm,

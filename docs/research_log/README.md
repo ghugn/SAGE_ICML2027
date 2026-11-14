@@ -84,4 +84,8 @@ Logs:
   independently reproduces the frozen Phase 10 negative boundary on Kaggle at
   commit `6b4f3fa`, separating the expected diagnostic failure from successful
   notebook execution.
+- [`2026-11-14_phase11_certified_multiscale.md`](2026-11-14_phase11_certified_multiscale.md) —
+  pre-registers an exact-importance multiscale proposal that separates
+  certified local samples from geometry-focused boundary samples without
+  changing the Phase 10 target smoothing objective.
 

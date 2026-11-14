@@ -56,6 +56,63 @@ using LinearAlgebra
     @test isapprox(ratio_mean, 1.0; atol = 0.02)
 end
 
+@testset "Certified multiscale proposal preserves the same compact-q target" begin
+    dimension = 3
+    beta = 2.0
+    normals = [1.0 0.0; 0.0 1.0; 0.0 0.0]
+    local_scale = 0.35
+    count = 30_000
+    batch = sample_certified_geometry_smoothing(
+        MersenneTwister(2026111411),
+        dimension,
+        count,
+        normals;
+        beta = beta,
+        base_weight = 0.2,
+        local_weight = 0.4,
+        geometry_weight = 0.4,
+        local_scale = local_scale,
+        focus_strength = 0.9,
+    )
+
+    @test size(batch.samples) == (dimension, count)
+    @test all(batch.importance_weights .* batch.proposal_ratios .≈ 1.0)
+    @test Set(batch.components) == Set((:base, :local, :focused))
+    @test all(
+        norm(batch.samples[:, index]) < local_scale
+        for index in eachindex(batch.components)
+        if batch.components[index] == :local
+    )
+    weighted_mass = sum(batch.importance_weights) / count
+    weighted_mean = batch.samples * batch.importance_weights ./ count
+    expected_second_moment = 1.0 / (dimension + 2beta + 2.0)
+    weighted_second_moments = [
+        sum(batch.importance_weights .* abs2.(batch.samples[row, :])) / count
+        for row in 1:dimension
+    ]
+    @test isapprox(weighted_mass, 1.0; atol = 0.025)
+    @test norm(weighted_mean) < 0.025
+    @test all(isapprox(moment, expected_second_moment; atol = 0.018)
+              for moment in weighted_second_moments)
+
+    @test scaled_ball_proposal_ratio([0.2, 0.0], 1.0) ≈ 1.0
+    @test scaled_ball_proposal_ratio([0.5, 0.0], 0.4) == 0.0
+    q_rng = MersenneTwister(2026111412)
+    ratio_mean = sum(
+        certified_geometry_proposal_ratio(
+            sample_ball_smoothing(q_rng, dimension; beta = beta),
+            normals;
+            beta = beta,
+            base_weight = 0.2,
+            local_weight = 0.4,
+            geometry_weight = 0.4,
+            local_scale = local_scale,
+            focus_strength = 0.9,
+        ) for _ in 1:count
+    ) / count
+    @test isapprox(ratio_mean, 1.0; atol = 0.03)
+end
+
 @testset "Optimizer geometry follows proposal equation 21" begin
     model = DisjunctiveModel(1)
     set_bounds!(model, lower = [-2.0], upper = [2.0])
@@ -172,5 +229,13 @@ end
     )
     @test_throws ArgumentError sample_geometry_smoothing(
         MersenneTwister(1), 1, 4, ones(1, 1); focus_strength = 1.1,
+    )
+    @test_throws ArgumentError scaled_ball_proposal_ratio([0.0], 0.0)
+    @test_throws ArgumentError certified_geometry_proposal_ratio(
+        [0.0], ones(1, 1); base_weight = 0.0,
+    )
+    @test_throws ArgumentError certified_geometry_proposal_ratio(
+        [0.0], ones(1, 1); base_weight = 0.2, local_weight = 0.2,
+        geometry_weight = 0.2,
     )
 end

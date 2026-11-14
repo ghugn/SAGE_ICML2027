@@ -32,7 +32,13 @@ neural networks with mixed logical-linear constraints.
 > black-box mean OOD task loss by 2.43%, but does not meet its frozen 10%
 > quality advantage or compute-reduction gate; STE and hard-local remain
 > numerically better. This negative boundary is retained rather than promoted
-> as a pass. The Phase 9 result has been independently reproduced on Kaggle at
+> as a pass. Phase 11 addresses the identified fixed-radius trade-off without
+> changing the target objective: a safe analytic-dual bound strengthens
+> certificates and an exact `q/p` multiscale proposal separates certified
+> local samples from geometry-focused samples. On the frozen five-seed
+> Job-Shop pilot it reduces global searches by 57.5% versus black-box and by
+> 26.1% versus strengthened fixed geometry, with exact feasibility; quality
+> intervals still cross zero. The Phase 9 result has been independently reproduced on Kaggle at
 > commit `f5dba1e`. See [`docs/SAGE_ALPHA.md`](docs/SAGE_ALPHA.md) and
 > [`docs/research_log`](docs/research_log) for the paper-facing audit trail.
 
@@ -40,8 +46,9 @@ neural networks with mixed logical-linear constraints.
 
 Upload and run [`SAGE_Kaggle_Reproducibility.ipynb`](SAGE_Kaggle_Reproducibility.ipynb)
 with Internet enabled. The notebook installs a pinned Julia release, clones this
-repository and instantiates dependencies. `RUN_MODE = "phase10"` (the default)
-reproduces the recorded negative job-shop diagnostic; `RUN_MODE = "phase9"`
+repository and instantiates dependencies. `RUN_MODE = "phase11"` (the default)
+runs the certified-multiscale Job-Shop gate; `RUN_MODE = "phase10"` reproduces
+the recorded negative fixed-radius diagnostic; `RUN_MODE = "phase9"`
 runs the accepted cooling-control pilot; `RUN_MODE = "alpha"` runs
 the pre-registered geometry-aware novelty gate; `RUN_MODE = "phase8"` runs the
 five-seed UCI Iris pilot; `RUN_MODE = "phase7"` runs the controlled scaling
@@ -311,6 +318,22 @@ loss by the pre-registered 10%. SAGE-Geometry is 2.43% better than black-box on
 mean OOD task loss, while STE and hard-local are numerically better. This is a
 useful negative field boundary, not evidence of job-shop superiority. See
 [`docs/research_log/2026-11-14_phase10_jobshop.md`](docs/research_log/2026-11-14_phase10_jobshop.md).
+
+Run the Phase 11 certified-multiscale gate:
+
+```bash
+SAGE_PHASE11_PROFILE=pilot julia --project=. scripts/benchmark_phase11_multiscale.jl
+```
+
+Phase 11 keeps the Phase 10 target `rho=0.5` and compact `q` unchanged. It
+adds a safe nonnegative-dual lower bound for coupled linear branches and an
+exact importance proposal mixing base, certified-local and geometry-focused
+samples. Across five matched seeds, strengthened fixed geometry uses 69 global
+searches and certified multiscale uses 51, versus black-box's 120. Multiscale
+also uses `0.943x` fixed geometry's complete branch solves, retains ESS
+`2.822/4`, and passes exact-feasibility gates. Its accuracy improvement is not
+statistically established. See
+[`docs/research_log/2026-11-14_phase11_certified_multiscale.md`](docs/research_log/2026-11-14_phase11_certified_multiscale.md).
 
 ---
 

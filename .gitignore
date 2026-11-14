@@ -45,6 +45,7 @@ phase9_cooling_results/
 phase9_cooling_smoke_results/
 phase10_jobshop_results/
 phase10_jobshop_smoke*_results/
+phase11_multiscale*_results/
 tmp_phase7*/
 tmp_phase8*/
 

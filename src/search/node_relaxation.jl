@@ -50,6 +50,107 @@ function _tighten_axis_interval!(
     return true
 end
 
+function _append_dual_inequality!(rows, bounds, constraint::LinearConstraint)
+    row = Float64.(constraint.a)
+    if constraint.sense == :<=
+        push!(rows, row)
+        push!(bounds, Float64(constraint.b))
+    elseif constraint.sense == :>=
+        push!(rows, -row)
+        push!(bounds, -Float64(constraint.b))
+    else
+        # A free equality multiplier is represented exactly as the difference
+        # of two nonnegative inequality multipliers.
+        push!(rows, row)
+        push!(bounds, Float64(constraint.b))
+        push!(rows, -row)
+        push!(bounds, -Float64(constraint.b))
+    end
+    return nothing
+end
+
+"""
+Return a safe analytic dual lower bound for Euclidean projection onto the
+selected partial polyhedron. Cyclic coordinate ascent only chooses a useful
+nonnegative multiplier vector; validity follows from weak duality for every
+iterate and does not depend on convergence or a solver status.
+"""
+function _dual_projection_lower_bound(
+    model::DisjunctiveModel,
+    yhat::AbstractVector{<:Real},
+    assignments::AbstractVector{<:Integer};
+    sweeps::Int = 40,
+)
+    n = model.n_outputs
+    rows = Vector{Vector{Float64}}()
+    bounds = Float64[]
+    for coordinate in 1:n
+        if isfinite(model.lb[coordinate])
+            row = zeros(n)
+            row[coordinate] = -1.0
+            push!(rows, row)
+            push!(bounds, -model.lb[coordinate])
+        end
+        if isfinite(model.ub[coordinate])
+            row = zeros(n)
+            row[coordinate] = 1.0
+            push!(rows, row)
+            push!(bounds, model.ub[coordinate])
+        end
+    end
+    foreach(
+        constraint -> _append_dual_inequality!(rows, bounds, constraint),
+        model.constraints,
+    )
+    for (rule_index, choice) in enumerate(assignments)
+        choice == 0 && continue
+        foreach(
+            constraint -> _append_dual_inequality!(rows, bounds, constraint),
+            model.disjunctions[rule_index].disjuncts[choice],
+        )
+    end
+    isempty(rows) && return 0.0
+
+    usable_rows = Vector{Vector{Float64}}()
+    usable_bounds = Float64[]
+    for (row, bound) in zip(rows, bounds)
+        row_norm_squared = sum(abs2, row)
+        if row_norm_squared == 0.0
+            0.0 <= bound || return Inf
+            continue
+        end
+        push!(usable_rows, row)
+        push!(usable_bounds, bound)
+    end
+    isempty(usable_rows) && return 0.0
+
+    matrix = reduce(vcat, permutedims.(usable_rows))
+    residual = matrix * Float64.(yhat) .- usable_bounds
+    multipliers = zeros(size(matrix, 1))
+    combined_normal = zeros(n)
+    for _ in 1:sweeps
+        for index in axes(matrix, 1)
+            row = view(matrix, index, :)
+            curvature = sum(abs2, row)
+            gradient = residual[index] - dot(row, combined_normal)
+            updated = max(0.0, multipliers[index] + gradient / curvature)
+            change = updated - multipliers[index]
+            if change != 0.0
+                multipliers[index] = updated
+                combined_normal .+= change .* row
+            end
+        end
+    end
+
+    linear_term = dot(multipliers, residual)
+    quadratic_term = 0.5 * sum(abs2, combined_normal)
+    # Subtract a scale-aware floating-point guard before using the value as a
+    # pruning certificate. This is deliberately much larger than roundoff for
+    # the small dense systems used here.
+    guard = 1e-10 * (1.0 + abs(linear_term) + quadratic_term)
+    return max(0.0, linear_term - quadratic_term - guard)
+end
+
 """
     geometric_lower_bound(model, yhat, assignments)
 
@@ -99,7 +200,9 @@ function geometric_lower_bound(
         )
     end
 
-    return 0.5 * distance_bound^2
+    rowwise_bound = 0.5 * distance_bound^2
+    dual_bound = _dual_projection_lower_bound(model, yhat, assignments)
+    return max(rowwise_bound, dual_bound)
 end
 
 function _partial_constraint_violation(

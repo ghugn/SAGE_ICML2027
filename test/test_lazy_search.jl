@@ -38,6 +38,50 @@ using Random
     )
     # Exact for the selected axis-aligned box: 0.5 * (1^2 + 2^2).
     @test geometric_lower_bound(box_model, [0.0, 0.0], [1]) ≈ 2.5
+
+    coupled = DisjunctiveModel(2)
+    add_linear_constraint!(coupled, [1.0, 1.0], :<=, 0.0)
+    add_linear_constraint!(coupled, [1.0, -1.0], :<=, 0.0)
+    # Each row alone gives objective 0.25 at [1, 0], whereas their
+    # nonnegative dual combination certifies the exact objective 0.5.
+    @test isapprox(
+        geometric_lower_bound(coupled, [1.0, 0.0], Int[]),
+        0.5;
+        atol = 1e-8,
+    )
+end
+
+@testset "Dual geometric bounds stay below coupled exact completions" begin
+    rng = MersenneTwister(2026111413)
+    for _ in 1:10
+        model = DisjunctiveModel(2)
+        set_bounds!(model, lower = fill(-2.0, 2), upper = fill(2.0, 2))
+        for _ in 1:3
+            direction = randn(rng, 2)
+            direction ./= sqrt(sum(abs2, direction))
+            add_disjunction!(
+                model,
+                [LinearConstraint(direction, :<=, -0.3)],
+                [LinearConstraint(direction, :>=, 0.3)],
+            )
+        end
+        point = -1.5 .+ 3.0 .* rand(rng, 2)
+        oracle = exhaustive_project(model, point)
+        for first in 0:2, second in 0:2, third in 0:2
+            assignments = [first, second, third]
+            matching = filter(oracle.branch_results) do branch
+                branch.accepted && all(
+                    assignments[index] == 0 ||
+                    assignments[index] == branch.choices[index]
+                    for index in eachindex(assignments)
+                )
+            end
+            isempty(matching) && continue
+            exact_completion = minimum(branch.objective for branch in matching)
+            bound = geometric_lower_bound(model, point, assignments)
+            @test bound <= exact_completion + 1e-8
+        end
+    end
 end
 
 @testset "Lazy search resolves the Phase 0 counterexample" begin
@@ -68,8 +112,8 @@ end
     @test isapprox(search.y, [0.75, 0.1]; atol = 1e-7)
     @test search.objective ≈ oracle.objective
     @test search.report.feasible
-    @test search.leaf_solves == 2
-    @test search.pruned_branches == 2
+    @test search.leaf_solves <= 2
+    @test search.pruned_branches >= 2
     @test search.leaf_solves + search.pruned_branches == search.total_branches
     @test search.termination_reason == :complete
     @test audit.unsafe_prunes == 0
