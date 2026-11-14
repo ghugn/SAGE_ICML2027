@@ -67,4 +67,7 @@ Logs:
   independent four-CPU Kaggle reproduction of tag `v0.2.0-alpha.1`, including
   density preservation, variance reduction, exact parity and complete solver
   work.
+- [`2026-11-14_pre_phase9_audit.md`](2026-11-14_pre_phase9_audit.md) — maps
+  proposal equations (7)-(21), experimental requirements E1-E6 and every
+  completed phase to implementation evidence, then fixes the Phase 9 scope.
 

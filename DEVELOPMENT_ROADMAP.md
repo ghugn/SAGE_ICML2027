@@ -1,6 +1,14 @@
 # DisjunctiveNet / SAGE Development and Verification Roadmap
 
-Updated: 2026-11-13
+Updated: 2026-11-14
+
+> **Numbering note.** Sections 3-9 below preserve the original implementation
+> roadmap. The executed research phases later became more granular: Phase 5 is
+> the discontinuity-learning gate, Phase 6 the matched-budget multi-branch
+> gate, Phase 7 controlled scaling, Phase 8 the Iris pipeline pilot, and the
+> research alpha adds proposal Component 4. The dated research logs are the
+> canonical audit trail; the current Phase 9 plan is recorded at the end of
+> this document.
 
 ## 1. Reproducible local environment
 
@@ -210,7 +218,8 @@ Status: initial proposal-faithful polyhedral implementation complete on
 2026-11-13. It implements fixed-branch implicit differentiation, a C1
 compact-support ball density, residual switching correction, stable-certificate
 fast path, and exact search over the retained competitor set. Boundary-focused
-importance sampling remains a separate efficiency extension.
+importance sampling was subsequently completed and verified in research alpha
+`v0.2.0-alpha.1`; see the dated alpha novelty and Kaggle logs.
 
 Acceptance ordering: Phase 4 metrics are gated by
 `scripts/verify_foundations.jl` and the complete package regression. Prototype
@@ -289,7 +298,37 @@ Proceed to large applications only if:
 Do not claim a fixed pruning percentage such as 99% until it is demonstrated
 across controlled regimes with confidence intervals and total wall-clock cost.
 
-## 10. Continuous verification commands
+## 10. Executed status and Phase 9
+
+Completed and independently recorded:
+
+- exact branch-wise forward, equations (7)-(10);
+- switching stability and competitor pruning, equations (11)-(12);
+- fixed-reference local plus residual estimator, equations (13)-(18);
+- optimizer-normal geometry proposal with exact importance correction,
+  equations (19)-(21);
+- controlled discontinuity learning, matched-budget multi-branch tests,
+  dimension/branch scaling and a five-seed Iris end-to-end pilot;
+- SAGE Core `v0.2.0-alpha.1`, independently reproduced on Kaggle.
+
+Phase 9 moves to proposal Roadmap Stage 4 rather than adding another synthetic
+estimator variant. Its primary task is a native-disjunction cooling-control
+benchmark compatible with the original DisjunctiveNet setting. It must first
+reproduce the inherited task and baseline, then compare hard-local, STE,
+black-box, certified SAGE and geometry-aware SAGE under matched perturbation
+and solver-work budgets. Required reporting includes exact logical feasibility,
+task quality, branch decisions, gradient/learning curves, global and local
+solver calls, certificate coverage, complete proposal overhead, wall time,
+multiple seeds, paired confidence intervals and retained failures.
+
+PBMC3k and robot/energy applications remain later tasks. Nonlinear convex or
+intrinsically nonconvex extensions must not be silently claimed from the current
+polyhedral backend.
+
+See `docs/research_log/2026-11-14_pre_phase9_audit.md` for the evidence map and
+entry conditions.
+
+## 11. Continuous verification commands
 
 Fast checks during development:
 

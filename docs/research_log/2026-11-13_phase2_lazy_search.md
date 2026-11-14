@@ -94,6 +94,19 @@ controlled eight-rule separated instance designed to measure pruning coverage.
 
 ## Entry 3 — Verification results
 
+### Reproduction commands
+
+From the project root with the pinned Julia environment:
+
+```powershell
+julia --project=. scripts\verify_lazy_search.jl
+julia --project=. test\runtests.jl
+```
+
+The first command emits `LAZY_SEARCH_VERIFICATION=PASS`; the second guards the
+complete package against search regressions. The quantitative output below is
+from the warmed verification run.
+
 ### Phase 2 assertions
 
 The dedicated lazy-search suite passed 184 assertions covering:
