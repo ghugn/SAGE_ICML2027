@@ -96,4 +96,7 @@ Logs:
   independently reproduces the complete five-method Phase 12 gate on Kaggle,
   including deterministic matched-step metrics and the platform-dependent
   calibrated-time limitation.
+- [`2026-11-14_phase13_difficulty_map.md`](2026-11-14_phase13_difficulty_map.md) —
+  pre-registers the full 3x3/3x4, short/long-horizon crossover map, shared
+  switching strata and high-sample gradient-alignment audit.
 

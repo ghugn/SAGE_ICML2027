@@ -44,7 +44,13 @@ neural networks with mixed logical-linear constraints.
 > with both heuristics while retaining the Phase 11 search reduction. Under a
 > calibrated-time replay, cheap STE and hard-local use almost twice as many
 > updates and obtain lower loss; this limitation is part of the accepted
-> result, not hidden. The Phase 9 result has been independently reproduced on Kaggle at
+> result, not hidden. Phase 13 then pre-registers a complete difficulty map
+> over 3x3/3x4 Job-Shop, 6/24 updates and shared switching/gradient audits.
+> The map completes safely but reports `CROSSOVER=NOT_OBSERVED`: on the hardest
+> higher-switch slice, STE is significantly better than multiscale SAGE even
+> though SAGE is closer to the numerical smoothed-gradient reference. This
+> rules out the simple claim that harder branching alone exposes an STE
+> failure. The Phase 9 result has been independently reproduced on Kaggle at
 > commit `f5dba1e`. See [`docs/SAGE_ALPHA.md`](docs/SAGE_ALPHA.md) and
 > [`docs/research_log`](docs/research_log) for the paper-facing audit trail.
 
@@ -52,8 +58,9 @@ neural networks with mixed logical-linear constraints.
 
 Upload and run [`SAGE_Kaggle_Reproducibility.ipynb`](SAGE_Kaggle_Reproducibility.ipynb)
 with Internet enabled. The notebook installs a pinned Julia release, clones this
-repository and instantiates dependencies. `RUN_MODE = "phase12"` (the default)
-runs the five-method matched Job-Shop comparison; `RUN_MODE = "phase11"` runs
+repository and instantiates dependencies. `RUN_MODE = "phase13"` (the default)
+runs the pre-registered difficulty/crossover map; `RUN_MODE = "phase12"` runs
+the five-method matched Job-Shop comparison; `RUN_MODE = "phase11"` runs
 the certified-multiscale mechanism gate; `RUN_MODE = "phase10"` reproduces
 the recorded negative fixed-radius diagnostic; `RUN_MODE = "phase9"`
 runs the accepted cooling-control pilot; `RUN_MODE = "alpha"` runs
@@ -61,7 +68,9 @@ the pre-registered geometry-aware novelty gate; `RUN_MODE = "phase8"` runs the
 five-seed UCI Iris pilot; `RUN_MODE = "phase7"` runs the controlled scaling
 gate; `RUN_MODE = "full"` runs every accepted gate and the full regression
 suite. Phase 10 is excluded from `full` because it is a diagnostic boundary,
-not an accepted gate. A GPU is not required
+not an accepted gate. Phase 13 is also a standalone diagnostic because its
+crossover answer is negative and its full sweep is comparatively expensive.
+A GPU is not required
 because the current certified search and QP backend are CPU workloads.
 
 The package lets users define constraints of the form
@@ -359,6 +368,21 @@ margin on full and higher-switch OOD strata and reduces global searches by
 superiority. In the time-calibrated replay, STE and hard-local achieve lower
 loss. See
 [`docs/research_log/2026-11-14_phase12_head_to_head.md`](docs/research_log/2026-11-14_phase12_head_to_head.md).
+
+Run the Phase 13 pre-registered difficulty/crossover map:
+
+```bash
+SAGE_PHASE13_PROFILE=pilot julia --project=. scripts/benchmark_phase13_difficulty_map.jl
+```
+
+This runs all `3x3/3x4 x 6/24-update` cells for hard-local, STE and certified
+multiscale SAGE, plus exact switching-exposure strata, a 64-sample numerical
+smoothed-gradient reference and a calibrated-time replay on the hardest cell.
+The frozen result reports `PHASE13_DIFFICULTY_MAP=PASS` and
+`PHASE13_CROSSOVER=NOT_OBSERVED`. Exact feasibility and all mechanism gates
+pass, but STE is significantly better on the hardest higher-switch stratum.
+See
+[`docs/research_log/2026-11-14_phase13_difficulty_map.md`](docs/research_log/2026-11-14_phase13_difficulty_map.md).
 
 ---
 

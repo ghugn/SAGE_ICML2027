@@ -18,6 +18,7 @@ export evaluate_network
 export initialize_network
 export prepare_problem
 export pretrain_network
+export output_gradient_audit
 export switching_exposure_partition
 export train_method
 
@@ -112,8 +113,9 @@ _operation(config::JobShopConfig, job, position) =
 function _validate_config(config::JobShopConfig)
     config.n_jobs >= 2 || throw(ArgumentError("Job-shop requires at least two jobs."))
     config.n_machines >= 2 || throw(ArgumentError("Job-shop requires at least two machines."))
-    config.n_jobs == 3 && config.n_machines == 3 || throw(ArgumentError(
-        "Phase 10 controlled implementation is frozen to 3 jobs and 3 machines.",
+    disjunctions = config.n_machines * binomial(config.n_jobs, 2)
+    disjunctions <= 18 || throw(ArgumentError(
+        "Controlled Job-Shop is capped at 18 binary disjunctions; requested $(disjunctions).",
     ))
     1 <= config.train_duration_min <= config.train_duration_max ||
         throw(ArgumentError("Invalid train duration range."))
@@ -325,8 +327,10 @@ function _raw_split(config, count, seed, distribution)
     count > 0 || throw(ArgumentError("Job-shop split size must be positive."))
     rng = MersenneTwister(seed)
     instances = JobShopInstance[]
-    raw_inputs = Matrix{Float64}(undef, 36, count)
-    targets = Matrix{Float64}(undef, 9, count)
+    n_operations = config.n_jobs * config.n_machines
+    input_dimension = n_operations * (config.n_machines + 1)
+    raw_inputs = Matrix{Float64}(undef, input_dimension, count)
+    targets = Matrix{Float64}(undef, n_operations, count)
     for index in 1:count
         instance = _sample_instance(rng, distribution, config)
         push!(instances, instance)
@@ -469,7 +473,12 @@ function pretrain_network(
 )
     epochs > 0 || throw(ArgumentError("pretraining epochs must be positive."))
     batch_size > 0 || throw(ArgumentError("pretraining batch size must be positive."))
-    network = initialize_network(seed; hidden = problem.config.hidden)
+    network = initialize_network(
+        seed;
+        input_dimension = size(problem.train.inputs, 1),
+        hidden = problem.config.hidden,
+        output_dimension = size(problem.train.targets, 1),
+    )
     state = _adam_state(network)
     rng = MersenneTwister(1_050_000 + Int(seed))
     count = size(problem.train.inputs, 2)
@@ -669,6 +678,89 @@ function _gradient_for_sample(
         return estimate.gradient, center_loss
     end
     throw(ArgumentError("Unknown job-shop training method $(method)."))
+end
+
+"""
+    output_gradient_audit(problem, network, index, seed; kwargs...)
+
+Compare the three Phase 13 backwards at one shared pretrained training center
+against a high-sample exact black-box smoothing estimate of the declared
+compact-`q` objective. This is diagnostic only: it does not update the network
+or select a checkpoint/hyperparameter.
+"""
+function output_gradient_audit(
+    problem::JobShopProblem,
+    network::JobShopMLP,
+    index::Int,
+    seed::Integer;
+    radius::Real = 0.5,
+    reference_samples::Int = 64,
+    sage_samples::Int = 32,
+)
+    1 <= index <= size(problem.train.inputs, 2) || throw(BoundsError(
+        axes(problem.train.inputs, 2), index,
+    ))
+    isfinite(radius) && radius > 0 || throw(ArgumentError(
+        "gradient-audit radius must be finite and positive.",
+    ))
+    reference_samples > 0 && iseven(reference_samples) || throw(ArgumentError(
+        "reference_samples must be a positive even integer.",
+    ))
+    sage_samples > 0 && iseven(sage_samples) || throw(ArgumentError(
+        "sage_samples must be a positive even integer.",
+    ))
+    point, _ = _forward(network, problem.train.inputs[:, index])
+    instance = problem.train.instances[index]
+
+    function estimate(method, samples, stream)
+        rng = MersenneTwister(
+            1_290_000_000 + 100_000Int(seed) + 1_000index + stream,
+        )
+        perturbations = method in (:blackbox, :sage_multiscale) ?
+            sample_antithetic_ball_smoothing(
+                rng, length(point), samples; beta = 2.0,
+            ) : zeros(length(point), max(samples, 2))
+        counters = TrainingCounters()
+        gradient, _ = _gradient_for_sample(
+            method, instance, point, perturbations, Float64(radius),
+            problem.config, counters, rng,
+        )
+        all(isfinite, gradient) || error(
+            "Gradient audit produced a non-finite $(method) vector.",
+        )
+        ess = counters.effective_sample_size_count > 0 ?
+            counters.effective_sample_size_sum / counters.effective_sample_size_count : NaN
+        return (
+            gradient = gradient,
+            global_searches = counters.perturbed_global_searches,
+            branch_solves = counters.center_leaf_solves +
+                counters.reference_branch_solves + counters.competitor_branch_solves +
+                counters.geometry_branch_solves + counters.lazy_leaf_solves,
+            ess = ess,
+            logical_failures = counters.logical_failures,
+            unresolved = counters.unresolved_samples,
+        )
+    end
+
+    reference = estimate(:blackbox, reference_samples, 1)
+    hard = estimate(:hard_local, 2, 2)
+    ste = estimate(:ste, 2, 3)
+    sage = estimate(:sage_multiscale, sage_samples, 4)
+    reference_norm = norm(reference.gradient)
+    reference_norm > 0 || error("Gradient-audit reference norm is zero.")
+    metrics(candidate) = (
+        cosine = dot(candidate.gradient, reference.gradient) /
+            max(norm(candidate.gradient) * reference_norm, eps(Float64)),
+        relative_error = norm(candidate.gradient - reference.gradient) / reference_norm,
+    )
+    return (
+        reference = reference,
+        hard_local = merge(hard, metrics(hard)),
+        ste = merge(ste, metrics(ste)),
+        sage_multiscale = merge(sage, metrics(sage)),
+        reference_norm = reference_norm,
+        point = point,
+    )
 end
 
 function evaluate_network(
