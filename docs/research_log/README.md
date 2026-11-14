@@ -80,4 +80,8 @@ Logs:
 - [`2026-11-14_phase10_jobshop.md`](2026-11-14_phase10_jobshop.md) —
   pre-registers the native-disjunction job-shop benchmark, MILP oracle,
   serial-dispatch adaptation test and proposal-faithful method comparison.
+- [`2026-11-14_phase10_kaggle_verification.md`](2026-11-14_phase10_kaggle_verification.md) —
+  independently reproduces the frozen Phase 10 negative boundary on Kaggle at
+  commit `6b4f3fa`, separating the expected diagnostic failure from successful
+  notebook execution.
 
