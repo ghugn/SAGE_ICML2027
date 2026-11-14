@@ -64,6 +64,11 @@ neural networks with mixed logical-linear constraints.
 > and probe overhead raises global searches by 8.21% over fixed `N=32`. This
 > negative result rules out exact independent probes as a useful controller on
 > this boundary-active workload.
+> Phase 16 is now pre-registered and implemented to close the remaining
+> training-horizon gap. It checkpoints uninterrupted 3x4 training at
+> 1/4/16/64 exact epochs for five methods and five seeds. Only its smoke profile
+> has been run locally; the several-hour pilot is delegated to Kaggle, so no
+> long-horizon crossover claim is made yet.
 > The Phase 9 result has been independently reproduced on Kaggle at
 > commit `f5dba1e`. See [`docs/SAGE_ALPHA.md`](docs/SAGE_ALPHA.md) and
 > [`docs/research_log`](docs/research_log) for the paper-facing audit trail.
@@ -72,8 +77,9 @@ neural networks with mixed logical-linear constraints.
 
 Upload and run [`SAGE_Kaggle_Reproducibility.ipynb`](SAGE_Kaggle_Reproducibility.ipynb)
 with Internet enabled. The notebook installs a pinned Julia release, clones this
-repository and instantiates dependencies. `RUN_MODE = "phase15"` (the default)
-reproduces the adaptive-controller negative result;
+repository and instantiates dependencies. `RUN_MODE = "phase16"` (the default)
+runs the several-hour 1/4/16/64-epoch convergence study;
+`RUN_MODE = "phase15"` reproduces the adaptive-controller negative result;
 `RUN_MODE = "phase14"` runs the objective-versus-variance diagnosis;
 `RUN_MODE = "phase13"` runs the difficulty/crossover map; `RUN_MODE = "phase12"` runs
 the five-method matched Job-Shop comparison; `RUN_MODE = "phase11"` runs
@@ -84,10 +90,11 @@ the pre-registered geometry-aware novelty gate; `RUN_MODE = "phase8"` runs the
 five-seed UCI Iris pilot; `RUN_MODE = "phase7"` runs the controlled scaling
 gate; `RUN_MODE = "full"` runs every accepted gate and the full regression
 suite. Phase 10 is excluded from `full` because it is a diagnostic boundary,
-not an accepted gate. Phases 13, 14 and 15 are also standalone diagnostics: Phase
+not an accepted gate. Phases 13-16 are also standalone diagnostics: Phase
 13 has a negative crossover answer, while Phase 14 diagnoses its mechanism
 without being an algorithmic quality gate, and Phase 15 retains a failed
-compute gate rather than promoting its controller.
+compute gate rather than promoting its controller. Phase 16 is excluded because
+of its multi-hour runtime and reports its crossover answer separately.
 A GPU is not required
 because the current certified search and QP backend are CPU workloads.
 
@@ -430,6 +437,20 @@ controller that uses an independent four-sample switching probe to choose
 `PHASE15_ADAPTIVE_CONTROLLER=FAIL`: quality and exact-safety gates pass, but
 probe overhead produces 1.082x fixed-`N=32` global searches. See
 [`docs/research_log/2026-11-14_phase15_adaptive_controller.md`](docs/research_log/2026-11-14_phase15_adaptive_controller.md).
+
+Run the Phase 16 long-horizon convergence study on Kaggle CPU:
+
+```bash
+SAGE_PHASE16_PROFILE=pilot julia --project=. scripts/benchmark_phase16_long_horizon.jl
+```
+
+Each seed/method is trained once to 1024 updates and checkpointed at
+`16/64/256/1024` updates (`1/4/16/64` exact-training epochs). The runner emits
+`PHASE16_LONG_HORIZON=PASS` when the full experiment is safe and complete, plus
+an independent `PHASE16_CROSSOVER=OBSERVED` or `NOT_OBSERVED` scientific
+answer. The full pilot is intentionally not run on the development machine.
+See
+[`docs/research_log/2026-11-14_phase16_long_horizon.md`](docs/research_log/2026-11-14_phase16_long_horizon.md).
 
 ---
 

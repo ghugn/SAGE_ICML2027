@@ -105,4 +105,8 @@ Logs:
 - [`2026-11-14_phase15_adaptive_controller.md`](2026-11-14_phase15_adaptive_controller.md) —
   pre-registers a certificate-triggered, independently probed SAGE sample
   controller and explicitly separates its new ownership from Đức's estimator.
+- [`2026-11-14_phase16_long_horizon.md`](2026-11-14_phase16_long_horizon.md) —
+  pre-registers a 1/4/16/64-epoch convergence study with uninterrupted
+  checkpoints and keeps the long-horizon crossover answer separate from code
+  completion.
 

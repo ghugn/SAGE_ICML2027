@@ -1138,6 +1138,7 @@ function train_method(
     evaluation_interval::Int = 20,
     max_steps::Int = typemax(Int),
     adaptive_policy::AdaptiveSAGEPolicy = AdaptiveSAGEPolicy(),
+    checkpoint_steps::AbstractVector{<:Integer} = Int[],
 )
     method in (
         :hard_local, :ste, :blackbox, :sage_cert, :sage_geometry,
@@ -1146,6 +1147,10 @@ function train_method(
         throw(ArgumentError("Unsupported job-shop method $(method)."))
     samples > 0 && iseven(samples) ||
         throw(ArgumentError("samples must be a positive even integer."))
+    evaluation_interval > 0 ||
+        throw(ArgumentError("evaluation_interval must be positive."))
+    all(step -> step > 0, checkpoint_steps) ||
+        throw(ArgumentError("checkpoint_steps must contain only positive integers."))
     network = deepcopy(pretrained)
     state = _adam_state(network)
     counters = TrainingCounters()
@@ -1154,20 +1159,44 @@ function train_method(
     count = size(problem.train.inputs, 2)
     orders = [randperm(rng, count) for _ in 1:epochs]
     sequence = reduce(vcat, orders)[1:min(max_steps, epochs * count)]
+    requested_checkpoints = sort!(unique!(Int.(collect(checkpoint_steps))))
+    all(step -> step <= length(sequence), requested_checkpoints) ||
+        throw(ArgumentError("checkpoint_steps cannot exceed the executed training steps."))
+    checkpoint_set = Set(requested_checkpoints)
+    checkpoint_networks = Dict{Int, JobShopMLP}()
 
-    function record!(step)
+    function record!(step, elapsed_seconds)
         iid = evaluate_network(network, problem.iid; config = problem.config)
         ood = evaluate_network(network, problem.ood; config = problem.config)
+        current_ess = counters.effective_sample_size_count > 0 ?
+            counters.effective_sample_size_sum / counters.effective_sample_size_count : NaN
         push!(trajectory, (
             step = step,
+            elapsed_seconds = elapsed_seconds,
             iid_task_loss = iid.task_loss,
             iid_makespan_gap = iid.makespan_gap,
             ood_task_loss = ood.task_loss,
             ood_makespan_gap = ood.makespan_gap,
+            perturbed_global_searches = counters.perturbed_global_searches,
+            complete_branch_solves = counters.center_leaf_solves +
+                counters.reference_branch_solves + counters.competitor_branch_solves +
+                counters.geometry_branch_solves + counters.lazy_leaf_solves,
+            switching_samples = counters.switching_samples,
+            unresolved_samples = counters.unresolved_samples,
+            logical_failures = counters.logical_failures,
+            mean_effective_sample_size = current_ess,
+            adaptive_stable_calls = counters.adaptive_stable_calls,
+            adaptive_probed_calls = counters.adaptive_probed_calls,
+            adaptive_probe_searches = counters.adaptive_probe_searches,
+            adaptive_probe_switches = counters.adaptive_probe_switches,
+            adaptive_minimum_calls = counters.adaptive_minimum_calls,
+            adaptive_medium_calls = counters.adaptive_medium_calls,
+            adaptive_maximum_calls = counters.adaptive_maximum_calls,
+            adaptive_estimation_samples = counters.adaptive_estimation_samples,
         ))
     end
 
-    record!(0)
+    record!(0, 0.0)
     started = time_ns()
     for (step, index) in enumerate(sequence)
         gradients = _zero_gradients(network)
@@ -1202,8 +1231,10 @@ function train_method(
         all(isfinite, output_gradient) || error("Job-shop gradient became non-finite.")
         _backward!(gradients, network, cache, output_gradient)
         _adam_update!(network, gradients, state, Float64(learning_rate))
-        if step % evaluation_interval == 0 || step == length(sequence)
-            record!(step)
+        step in checkpoint_set && (checkpoint_networks[step] = deepcopy(network))
+        if step % evaluation_interval == 0 || step == length(sequence) ||
+                step in checkpoint_set
+            record!(step, (time_ns() - started) / 1e9)
         end
     end
     training_seconds = (time_ns() - started) / 1e9
@@ -1213,6 +1244,7 @@ function train_method(
         counters.local_radius_sum / counters.local_radius_count : NaN
     return (
         network = network,
+        checkpoint_networks = checkpoint_networks,
         trajectory = trajectory,
         training_seconds = training_seconds,
         steps = length(sequence),
