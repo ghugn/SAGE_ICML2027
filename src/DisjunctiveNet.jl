@@ -30,6 +30,7 @@ include("certificates/branch_margin.jl")
 include("gradients/smoothing_distribution.jl")
 include("gradients/local_implicit.jl")
 include("gradients/switching_correction.jl")
+include("gradients/geometry_sampling.jl")
 include("gradients/sage_estimator.jl")
 
 include("layers/projection_layer.jl")
@@ -108,9 +109,15 @@ export FixedBranchGradientResult
 export RelevantProjectionResult
 export SAGESampleRecord
 export SAGEEstimate
+export SAGEConfig
+export GeometrySampleBatch
+export SwitchingGeometry
 export sample_ball_smoothing
 export sample_antithetic_ball_smoothing
+export sample_geometry_smoothing
 export ball_smoothing_score
+export geometry_proposal_ratio
+export switching_geometry
 export fixed_branch_loss_gradient
 export project_relevant_branches
 export sage_gradient

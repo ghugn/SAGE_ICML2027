@@ -57,4 +57,10 @@ Logs:
   independent four-CPU Kaggle reproduction of commit `42ba497`, including the
   exact-feasibility result, paired uncertainty, 89.3% global-search reduction
   and the limits of the small five-seed Iris pilot.
+- [`2026-11-14_sage_alpha_novelty.md`](2026-11-14_sage_alpha_novelty.md) —
+  pre-registers the Component-4 geometry-aware importance sampler, explicit
+  SAGE-Base/Cert/Geometry ablation and research-alpha novelty gates.
+- [`2026-11-14_alpha_release_verification.md`](2026-11-14_alpha_release_verification.md) —
+  records the `0.2.0-alpha.1` package boundary and the final local regression
+  matrix across unit tests and Phases 6-8.
 

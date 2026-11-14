@@ -3,7 +3,7 @@
 `DisjunctiveNet.jl` provides differentiable convexified projection layers for
 neural networks with mixed logical-linear constraints.
 
-> **Research status (2026-11-13):** the certified foundation, lazy search,
+> **Research status (2026-11-14):** the certified foundation, lazy search,
 > switching certificate, proposal-faithful SAGE estimator, and controlled
 > scalar, multi-branch, and controlled Phase 7 scaling gates are implemented.
 > The original fixed-`N=64` Phase 7 smoke test remains an honest failure. The
@@ -15,14 +15,21 @@ neural networks with mixed logical-linear constraints.
 > passes: SAGE has the lowest mean test MSE, 89% fewer perturbed global searches
 > and a `0.667x` training-time ratio versus matched black-box smoothing. Its
 > paired confidence intervals still include zero, so this is promising pilot
-> evidence rather than broad real-data superiority. See
+> evidence rather than broad real-data superiority. The research-alpha
+> geometry gate now adds proposal Component 4: exact importance sampling along
+> optimizer-derived switching normals. Against matched independent smoothing it
+> retained 44.96% of the variance, and against antithetic smoothing 62.75%,
+> while cutting complete branch solves by 30% versus the uncertified base. This
+> establishes the proposed mechanism on controlled problems, not universal
+> novelty or superiority. See [`docs/SAGE_ALPHA.md`](docs/SAGE_ALPHA.md) and
 > [`docs/research_log`](docs/research_log) for the paper-facing audit trail.
 
 ## Kaggle reproduction
 
 Upload and run [`SAGE_Kaggle_Reproducibility.ipynb`](SAGE_Kaggle_Reproducibility.ipynb)
 with Internet enabled. The notebook installs a pinned Julia release, clones this
-repository and instantiates dependencies. `RUN_MODE = "phase8"` runs the
+repository and instantiates dependencies. `RUN_MODE = "alpha"` runs the
+pre-registered geometry-aware novelty gate; `RUN_MODE = "phase8"` runs the
 five-seed UCI Iris pilot; `RUN_MODE = "phase7"` runs the controlled scaling
 gate; `RUN_MODE = "full"` runs every accepted gate and the full regression suite. A GPU is not required
 because the current certified search and QP backend are CPU workloads.
@@ -178,6 +185,37 @@ Reproduce the analytic and Monte Carlo fidelity report with:
 julia --project=. scripts/verify_sage_gradient.jl
 ```
 
+The research alpha exposes all proposal-aligned choices in a typed
+configuration. Geometry mode uses exact ordinary importance weighting and
+falls back to the original compact density when switching geometry is absent:
+
+```julia
+config = SAGEConfig(
+    radius = 0.5,
+    n_samples = 64,
+    sampling = :geometry,
+    geometry_mixture_weight = 0.5,
+    geometry_focus_strength = 0.9,
+)
+
+estimate = sage_gradient(dm, z, loss, loss_gradient, config)
+estimate.gradient
+estimate.geometry_status
+estimate.importance_effective_sample_size
+```
+
+Reproduce the pre-registered mechanism and ablation gate with:
+
+```bash
+julia --project=. scripts/benchmark_sage_novelty_alpha.jl
+```
+
+This compares independent compact-density smoothing, antithetic smoothing and
+geometry-aware importance sampling, then separately ablates certificates and
+counts geometry-construction work. The recorded gate reports
+`SAGE_ALPHA_NOVELTY=PASS`. Its precise claim and limitations are documented in
+[`docs/SAGE_ALPHA.md`](docs/SAGE_ALPHA.md).
+
 Reproduce the Phase 6 controlled multi-branch fidelity and efficiency gate:
 
 ```bash
@@ -237,14 +275,14 @@ Install the package normally:
 ```julia
 using Pkg
 
-Pkg.add(url = "https://github.com/ShramanPal/DisjunctiveNet.jl")
+Pkg.add(url = "https://github.com/ghugn/SAGE_ICML2027.git", rev = "v0.2.0-alpha.1")
 ```
 
 For local development:
 
 ```bash
-git clone https://github.com/ShramanPal/DisjunctiveNet.jl
-cd DisjunctiveNet.jl
+git clone https://github.com/ghugn/SAGE_ICML2027.git
+cd SAGE_ICML2027
 julia --project=.
 ```
 

@@ -16,6 +16,9 @@ struct SAGESampleRecord
     gradient::Vector{Float64}
     switched::Bool
     status::Symbol
+    importance_weight::Float64
+    proposal_ratio::Float64
+    sampling_component::Symbol
 end
 
 """Monte Carlo estimate and solver/certificate diagnostics for SAGE."""
@@ -37,8 +40,31 @@ struct SAGEEstimate
     lazy_relaxation_solves::Int
     switching_samples::Int
     unresolved_samples::Int
+    sampling::Symbol
+    geometry_status::Symbol
+    geometry_normals::Int
+    geometry_branch_solves::Int
+    importance_effective_sample_size::Float64
+    use_ball_certificate::Bool
+    use_sample_certificate::Bool
     solve_time::Float64
     records::Vector{SAGESampleRecord}
+end
+
+"""Typed public configuration for the SAGE research-alpha estimator."""
+Base.@kwdef struct SAGEConfig
+    radius::Float64
+    n_samples::Int = 16
+    beta::Float64 = 2.0
+    sampling::Symbol = :isotropic
+    geometry_mixture_weight::Float64 = 0.5
+    geometry_focus_strength::Float64 = 0.9
+    geometry_max_normals::Int = 8
+    use_ball_certificate::Bool = true
+    use_sample_certificate::Bool = true
+    global_strategy::Symbol = :auto
+    restricted_branch_limit::Int = 4
+    store_records::Bool = true
 end
 
 is_certified(estimate::SAGEEstimate) = estimate.status == :ok
@@ -115,6 +141,15 @@ function sage_gradient(
     global_strategy::Symbol = :auto,
     restricted_branch_limit::Int = 4,
     store_records::Bool = true,
+    sampling::Symbol = :isotropic,
+    importance_weights = nothing,
+    geometry_normals = nothing,
+    geometry_mixture_weight::Real = 0.5,
+    geometry_focus_strength::Real = 0.9,
+    geometry_max_normals::Int = 8,
+    geometry_normal_tol::Real = 1e-9,
+    use_ball_certificate::Bool = true,
+    use_sample_certificate::Bool = true,
 )
     length(z) == model.n_outputs ||
         throw(DimensionMismatch("z dimension does not match the model."))
@@ -128,6 +163,28 @@ function sage_gradient(
     ))
     restricted_branch_limit > 0 ||
         throw(ArgumentError("restricted_branch_limit must be positive."))
+    sampling in (:isotropic, :geometry, :provided) || throw(ArgumentError(
+        "sampling must be :isotropic, :geometry, or :provided.",
+    ))
+    sampling == :provided && samples === nothing && throw(ArgumentError(
+        "sampling=:provided requires explicit samples.",
+    ))
+    sampling == :geometry && samples !== nothing && throw(ArgumentError(
+        "sampling=:geometry generates its own exact proposal samples; use " *
+        "sampling=:provided with explicit importance_weights to reuse a batch.",
+    ))
+    importance_weights !== nothing && samples === nothing && throw(ArgumentError(
+        "importance_weights require explicit samples.",
+    ))
+    geometry_normals !== nothing && sampling != :geometry && throw(ArgumentError(
+        "geometry_normals are valid only with sampling=:geometry.",
+    ))
+    geometry_max_normals > 0 || throw(ArgumentError(
+        "geometry_max_normals must be positive.",
+    ))
+    geometry_normal_tol >= 0 || throw(ArgumentError(
+        "geometry_normal_tol must be nonnegative.",
+    ))
 
     started = time_ns()
     center = Float64.(collect(z))
@@ -170,17 +227,100 @@ function sage_gradient(
         return SAGEEstimate(
             Float64[], :center_uncertified, center, Float64(radius), Int[],
             stability, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            sampling, :not_built, 0, 0, 0.0,
+            use_ball_certificate, use_sample_certificate,
             (time_ns() - started) / 1e9, SAGESampleRecord[],
         )
 
-    smoothing_samples = _resolve_smoothing_samples(
-        rng,
-        model.n_outputs,
-        n_samples,
-        Float64(beta),
-        samples,
-    )
-    relevant_groups = competitor_set(stability)
+    ball_stable = use_ball_certificate && certifies_stability(stability)
+    relevant_groups = use_ball_certificate ? competitor_set(stability) : stability.groups
+    geometry_status = :not_requested
+    geometry_normal_count = 0
+    geometry_branch_solves = 0
+    sampling_label = sampling
+    sample_components = Symbol[]
+    sample_weights = Float64[]
+    sample_ratios = Float64[]
+
+    smoothing_samples = Vector{Vector{Float64}}()
+    if sampling == :geometry && !ball_stable
+        normal_matrix = if geometry_normals === nothing
+            geometry = switching_geometry(
+                model,
+                center,
+                stability.winner,
+                stability.winner_point,
+                relevant_groups;
+                solver = solver,
+                feasibility_tol = feasibility_tol,
+                normal_tol = geometry_normal_tol,
+                max_normals = geometry_max_normals,
+            )
+            geometry_status = geometry.status
+            geometry_branch_solves = geometry.branch_solves
+            geometry.normals
+        else
+            geometry_status = :provided
+            _normalized_geometry_normals(
+                geometry_normals,
+                model.n_outputs;
+                tolerance = Float64(geometry_normal_tol),
+            )
+        end
+        geometry_normal_count = size(normal_matrix, 2)
+        if geometry_normal_count > 0
+            batch = sample_geometry_smoothing(
+                rng,
+                model.n_outputs,
+                n_samples,
+                normal_matrix;
+                beta = beta,
+                mixture_weight = geometry_mixture_weight,
+                focus_strength = geometry_focus_strength,
+            )
+            smoothing_samples = [copy(batch.samples[:, index])
+                                 for index in axes(batch.samples, 2)]
+            sample_weights = copy(batch.importance_weights)
+            sample_ratios = copy(batch.proposal_ratios)
+            sample_components = copy(batch.components)
+        else
+            # Degenerate or unavailable normals affect only efficiency. Falling
+            # back to q preserves the exact objective and estimator target.
+            sampling_label = :geometry_fallback
+            smoothing_samples = _resolve_smoothing_samples(
+                rng, model.n_outputs, n_samples, Float64(beta), nothing,
+            )
+            sample_weights = ones(length(smoothing_samples))
+            sample_ratios = ones(length(smoothing_samples))
+            sample_components = fill(:base, length(smoothing_samples))
+        end
+    else
+        if sampling == :geometry
+            geometry_status = :stable_fallback
+            sampling_label = :geometry_fallback
+        end
+        smoothing_samples = _resolve_smoothing_samples(
+            rng,
+            model.n_outputs,
+            n_samples,
+            Float64(beta),
+            samples,
+        )
+        if importance_weights === nothing
+            sample_weights = ones(length(smoothing_samples))
+        else
+            sample_weights = Float64.(collect(importance_weights))
+            length(sample_weights) == length(smoothing_samples) || throw(DimensionMismatch(
+                "importance_weights must contain one value per sample.",
+            ))
+            all(weight -> isfinite(weight) && weight > 0.0, sample_weights) ||
+                throw(ArgumentError("importance weights must be finite and positive."))
+        end
+        sample_ratios = inv.(sample_weights)
+        sample_components = fill(samples === nothing ? :base : :provided,
+                                 length(smoothing_samples))
+    end
+    effective_sample_size = sum(sample_weights)^2 / sum(abs2, sample_weights)
     gradient_sum = zeros(model.n_outputs)
     reference_solves = 0
     global_searches = 0
@@ -194,7 +334,10 @@ function sage_gradient(
     unresolved_samples = 0
     records = SAGESampleRecord[]
 
-    for u in smoothing_samples
+    for (sample_index, u) in enumerate(smoothing_samples)
+        importance_weight = sample_weights[sample_index]
+        proposal_ratio = sample_ratios[sample_index]
+        sampling_component = sample_components[sample_index]
         w = center .+ Float64(radius) .* u
         reference = project_branch(
             model,
@@ -219,6 +362,7 @@ function sage_gradient(
             store_records && push!(records, SAGESampleRecord(
                 copy(u), w, Float64[], Float64[], Int[], NaN, NaN, NaN,
                 Float64[], Float64[], Float64[], false, :local_unresolved,
+                importance_weight, proposal_ratio, sampling_component,
             ))
             continue
         end
@@ -231,7 +375,7 @@ function sage_gradient(
         residual = 0.0
         switched = false
 
-        if !certifies_stability(stability) && _reference_dominates_competitors(
+        if !ball_stable && use_sample_certificate && _reference_dominates_competitors(
             model,
             w,
             reference,
@@ -242,7 +386,7 @@ function sage_gradient(
             # sampled point. Eq. (18) has zero residual, so no global solve is
             # needed even though the whole perturbation ball was inconclusive.
             sample_certificates += 1
-        elseif !certifies_stability(stability)
+        elseif !ball_stable
             global_searches += 1
             relevant_count = 1 + sum(group.branch_count for group in relevant_groups; init = 0)
             use_restricted = global_strategy == :restricted ||
@@ -295,6 +439,7 @@ function sage_gradient(
                 store_records && push!(records, SAGESampleRecord(
                     copy(u), w, local_result.y, Float64[], Int[], local_loss, NaN, NaN,
                     local_result.gradient, Float64[], Float64[], false, :global_unresolved,
+                    importance_weight, proposal_ratio, sampling_component,
                 ))
                 continue
             end
@@ -310,12 +455,13 @@ function sage_gradient(
 
         score = ball_smoothing_score(u; beta = beta)
         correction = (residual / Float64(radius)) .* score
-        sample_gradient = local_result.gradient .+ correction
+        sample_gradient = importance_weight .* (local_result.gradient .+ correction)
         gradient_sum .+= sample_gradient
         store_records && push!(records, SAGESampleRecord(
             copy(u), w, local_result.y, copy(global_y), copy(global_choices),
             local_loss, global_loss, residual, copy(local_result.gradient), correction,
             sample_gradient, switched, :ok,
+            importance_weight, proposal_ratio, sampling_component,
         ))
     end
 
@@ -339,8 +485,45 @@ function sage_gradient(
         lazy_relaxation_solves,
         switching_samples,
         unresolved_samples,
+        sampling_label,
+        geometry_status,
+        geometry_normal_count,
+        geometry_branch_solves,
+        effective_sample_size,
+        use_ball_certificate,
+        use_sample_certificate,
         (time_ns() - started) / 1e9,
         records,
+    )
+end
+
+"""Configuration-object overload for the research-alpha public API."""
+function sage_gradient(
+    model::DisjunctiveModel,
+    z::AbstractVector{<:Real},
+    loss,
+    loss_gradient,
+    config::SAGEConfig;
+    kwargs...,
+)
+    return sage_gradient(
+        model,
+        z,
+        config.radius,
+        loss,
+        loss_gradient;
+        n_samples = config.n_samples,
+        beta = config.beta,
+        sampling = config.sampling,
+        geometry_mixture_weight = config.geometry_mixture_weight,
+        geometry_focus_strength = config.geometry_focus_strength,
+        geometry_max_normals = config.geometry_max_normals,
+        use_ball_certificate = config.use_ball_certificate,
+        use_sample_certificate = config.use_sample_certificate,
+        global_strategy = config.global_strategy,
+        restricted_branch_limit = config.restricted_branch_limit,
+        store_records = config.store_records,
+        kwargs...,
     )
 end
 
