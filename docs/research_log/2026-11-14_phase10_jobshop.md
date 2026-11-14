@@ -302,3 +302,47 @@ STE/hard-local on job-shop scheduling.
 The local pilot artifacts remain untracked under
 `phase10_jobshop_results/`. Kaggle writes the same three artifacts into its
 timestamped reproduction log bundle.
+
+### 2026-11-14 - post-pilot interpretation and next hypothesis
+
+Phase 10 does **not** establish that the complete SAGE architecture has
+failed. It rejects the narrower hypothesis that increasing branch count and
+using one fixed smoothing radius is sufficient to create a SAGE advantage on
+the controlled 3-by-3 job-shop slice.
+
+Evidence retained for this distinction:
+
+- SAGE-Geometry improved its exact pretrained initialization by `7.53%`;
+- SAGE-Geometry improved mean black-box OOD task loss by `2.43%`;
+- every constrained output remained logically feasible;
+- geometry importance sampling retained mean ESS `3.959/4`;
+- the paired superiority intervals crossed zero;
+- STE and hard-local were numerically better;
+- all `120/120` SAGE perturbations required global search, so the certificate
+  path produced no global-search reduction.
+
+The observed failure mode is a fixed-radius trade-off. Small radii in the
+switching-only sweep did not reach boundaries, whereas the selected
+`rho=0.50` produced useful switching but moved too many samples outside the
+certified stable region. One radius was therefore being asked to serve two
+different roles: cheap local/certificate estimation and boundary discovery.
+
+The next pre-registered hypothesis should remain aligned with the proposal's
+architecture while testing this missing mechanism:
+
+1. keep the Phase 10 fixed-radius result unchanged as the negative baseline;
+2. compare fixed radius against margin-adaptive radius, or explicitly separate
+   a local certificate radius from a boundary-proposal radius;
+3. select radii only from branch-margin/geometry information, never from test
+   loss or the winning method;
+4. require exact target-density/importance-weight accounting, feasibility and
+   zero unsafe pruning;
+5. measure switching coverage, global searches, complete branch solves, bias,
+   ESS, OOD task loss and paired uncertainty;
+6. treat failure to improve both quality or computation across paired seeds as
+   evidence against applying certificate-geometry SAGE to this job-shop
+   regime.
+
+No adaptive-radius result exists yet. It must not be described as a repair or
+advantage until the ablation is implemented and evaluated under gates frozen
+before observation.
