@@ -49,6 +49,7 @@ phase11_multiscale*_results/
 phase12_head_to_head*_results/
 phase13_difficulty_map*_results/
 phase14_mechanism*_results/
+phase15_adaptive*_results/
 tmp_phase7*/
 tmp_phase8*/
 

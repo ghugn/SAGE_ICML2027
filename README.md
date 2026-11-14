@@ -56,6 +56,14 @@ neural networks with mixed logical-linear constraints.
 > at two of three radii: SAGE `N=32` improves exact loss more than `N=4` at
 > `rho=0.30/0.50`. Hard-local is still strongest in this mostly non-switching
 > probe, so Phase 14 diagnoses the negative result rather than reversing it.
+> Phase 15 implements a new independently probed `N=4/16/32` controller while
+> preserving the fixed SAGE target and exact `q/p`. It passes safety,
+> accounting and quality gates, improving over fixed `N=4` and remaining
+> within 1.32% of fixed `N=32`. The controller nevertheless fails its compute
+> gate: no training center is full-ball stable, 42/60 updates select `N=32`,
+> and probe overhead raises global searches by 8.21% over fixed `N=32`. This
+> negative result rules out exact independent probes as a useful controller on
+> this boundary-active workload.
 > The Phase 9 result has been independently reproduced on Kaggle at
 > commit `f5dba1e`. See [`docs/SAGE_ALPHA.md`](docs/SAGE_ALPHA.md) and
 > [`docs/research_log`](docs/research_log) for the paper-facing audit trail.
@@ -64,8 +72,9 @@ neural networks with mixed logical-linear constraints.
 
 Upload and run [`SAGE_Kaggle_Reproducibility.ipynb`](SAGE_Kaggle_Reproducibility.ipynb)
 with Internet enabled. The notebook installs a pinned Julia release, clones this
-repository and instantiates dependencies. `RUN_MODE = "phase14"` (the default)
-runs the pre-registered objective-versus-variance diagnosis;
+repository and instantiates dependencies. `RUN_MODE = "phase15"` (the default)
+reproduces the adaptive-controller negative result;
+`RUN_MODE = "phase14"` runs the objective-versus-variance diagnosis;
 `RUN_MODE = "phase13"` runs the difficulty/crossover map; `RUN_MODE = "phase12"` runs
 the five-method matched Job-Shop comparison; `RUN_MODE = "phase11"` runs
 the certified-multiscale mechanism gate; `RUN_MODE = "phase10"` reproduces
@@ -75,9 +84,10 @@ the pre-registered geometry-aware novelty gate; `RUN_MODE = "phase8"` runs the
 five-seed UCI Iris pilot; `RUN_MODE = "phase7"` runs the controlled scaling
 gate; `RUN_MODE = "full"` runs every accepted gate and the full regression
 suite. Phase 10 is excluded from `full` because it is a diagnostic boundary,
-not an accepted gate. Phases 13 and 14 are also standalone diagnostics: Phase
+not an accepted gate. Phases 13, 14 and 15 are also standalone diagnostics: Phase
 13 has a negative crossover answer, while Phase 14 diagnoses its mechanism
-without being an algorithmic quality gate.
+without being an algorithmic quality gate, and Phase 15 retains a failed
+compute gate rather than promoting its controller.
 A GPU is not required
 because the current certified search and QP backend are CPU workloads.
 
@@ -407,6 +417,19 @@ shown to be misaligned, while finite-sample SAGE variance is confirmed at two
 of three radii. This is an honest diagnostic result, not evidence that SAGE
 beats hard-local or STE. See
 [`docs/research_log/2026-11-14_phase14_mechanism_diagnosis.md`](docs/research_log/2026-11-14_phase14_mechanism_diagnosis.md).
+
+Run the Phase 15 adaptive-controller diagnostic:
+
+```bash
+SAGE_PHASE15_PROFILE=pilot julia --project=. scripts/benchmark_phase15_adaptive_controller.jl
+```
+
+This compares hard-local, STE, fixed multiscale SAGE `N=4/32` and a new
+controller that uses an independent four-sample switching probe to choose
+`N=4/16/32`. The frozen pilot honestly reports
+`PHASE15_ADAPTIVE_CONTROLLER=FAIL`: quality and exact-safety gates pass, but
+probe overhead produces 1.082x fixed-`N=32` global searches. See
+[`docs/research_log/2026-11-14_phase15_adaptive_controller.md`](docs/research_log/2026-11-14_phase15_adaptive_controller.md).
 
 ---
 

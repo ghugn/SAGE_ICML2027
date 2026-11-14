@@ -102,4 +102,7 @@ Logs:
 - [`2026-11-14_phase14_mechanism_diagnosis.md`](2026-11-14_phase14_mechanism_diagnosis.md) —
   separates smoothed-objective mismatch from finite-sample variance using a
   fixed radius/sample grid, normalized one-step tests and common randomness.
+- [`2026-11-14_phase15_adaptive_controller.md`](2026-11-14_phase15_adaptive_controller.md) —
+  pre-registers a certificate-triggered, independently probed SAGE sample
+  controller and explicitly separates its new ownership from Đức's estimator.
 

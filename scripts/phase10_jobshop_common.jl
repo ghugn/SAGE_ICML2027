@@ -9,6 +9,7 @@ using Random
 using Statistics
 
 export JobShopConfig
+export AdaptiveSAGEPolicy
 export JobShopInstance
 export JobShopMLP
 export JobShopProblem
@@ -20,6 +21,7 @@ export prepare_problem
 export pretrain_network
 export output_gradient_audit
 export estimate_output_gradient
+export adaptive_sample_budget
 export switching_exposure_partition
 export train_method
 
@@ -33,6 +35,51 @@ Base.@kwdef struct JobShopConfig
     hidden::Int = 32
     makespan_loss_weight::Float64 = 0.25
     feasibility_tolerance::Float64 = 1e-6
+end
+
+"""
+    AdaptiveSAGEPolicy
+
+Phase 15 controller policy. Probe samples are used only to select an independent
+SAGE estimation budget and are never reused in the gradient average.
+"""
+Base.@kwdef struct AdaptiveSAGEPolicy
+    probe_samples::Int = 4
+    minimum_samples::Int = 4
+    medium_samples::Int = 16
+    maximum_samples::Int = 32
+    medium_switch_threshold::Int = 1
+    maximum_switch_threshold::Int = 2
+end
+
+function _validate_adaptive_policy(policy::AdaptiveSAGEPolicy)
+    policy.probe_samples > 0 && iseven(policy.probe_samples) ||
+        throw(ArgumentError("adaptive probe_samples must be a positive even integer."))
+    all(samples -> samples > 0 && iseven(samples), (
+        policy.minimum_samples, policy.medium_samples, policy.maximum_samples,
+    )) || throw(ArgumentError("adaptive SAGE budgets must be positive even integers."))
+    policy.minimum_samples <= policy.medium_samples <= policy.maximum_samples ||
+        throw(ArgumentError("adaptive SAGE budgets must be nondecreasing."))
+    1 <= policy.medium_switch_threshold < policy.maximum_switch_threshold ||
+        throw(ArgumentError("adaptive switch thresholds must be positive and ordered."))
+    policy.maximum_switch_threshold <= policy.probe_samples || throw(ArgumentError(
+        "adaptive maximum switch threshold cannot exceed probe_samples.",
+    ))
+    return nothing
+end
+
+"""Select the Phase 15 estimation budget from an independent probe count."""
+function adaptive_sample_budget(
+    probe_switches::Integer,
+    policy::AdaptiveSAGEPolicy = AdaptiveSAGEPolicy(),
+)
+    _validate_adaptive_policy(policy)
+    0 <= probe_switches <= policy.probe_samples || throw(ArgumentError(
+        "probe_switches must lie between zero and probe_samples.",
+    ))
+    probe_switches >= policy.maximum_switch_threshold && return policy.maximum_samples
+    probe_switches >= policy.medium_switch_threshold && return policy.medium_samples
+    return policy.minimum_samples
 end
 
 struct JobShopInstance
@@ -101,11 +148,20 @@ mutable struct TrainingCounters
     local_radius_sum::Float64
     local_radius_count::Int
     positive_local_radius_calls::Int
+    adaptive_stable_calls::Int
+    adaptive_probed_calls::Int
+    adaptive_probe_searches::Int
+    adaptive_probe_switches::Int
+    adaptive_minimum_calls::Int
+    adaptive_medium_calls::Int
+    adaptive_maximum_calls::Int
+    adaptive_estimation_samples::Int
 end
 
 TrainingCounters() = TrainingCounters(
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0,
     0, 0, 0, 0.0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
 )
 
 _operation(config::JobShopConfig, job, position) =
@@ -511,6 +567,95 @@ function _record_center!(counters, center)
     return nothing
 end
 
+function _record_sage_estimate!(counters, estimate)
+    counters.perturbed_global_searches += estimate.perturbed_global_searches
+    counters.reference_branch_solves += estimate.reference_branch_solves
+    counters.competitor_branch_solves += estimate.competitor_branch_solves
+    counters.geometry_branch_solves += estimate.geometry_branch_solves
+    counters.sample_certificates += estimate.sample_stability_certificates
+    counters.lazy_leaf_solves += estimate.lazy_leaf_solves
+    counters.lazy_relaxation_solves += estimate.lazy_relaxation_solves
+    counters.switching_samples += estimate.switching_samples
+    counters.unresolved_samples += estimate.unresolved_samples
+    counters.effective_sample_size_sum += estimate.importance_effective_sample_size
+    counters.effective_sample_size_count += 1
+    return nothing
+end
+
+function _multiscale_sage_estimate(
+    instance,
+    point,
+    perturbations,
+    radius,
+    config,
+    counters,
+    rng,
+    center;
+    boundary_certificate = nothing,
+)
+    certificate = boundary_certificate === nothing ? switching_certificate(
+        instance.model,
+        point,
+        radius;
+        center_result = center,
+    ) : boundary_certificate
+    relevant_groups = competitor_set(certificate)
+    geometry = switching_geometry(
+        instance.model,
+        point,
+        certificate.winner,
+        certificate.winner_point,
+        relevant_groups,
+    )
+    local_radius = certified_local_radius(certificate)
+    counters.local_radius_sum += local_radius
+    counters.local_radius_count += 1
+    counters.positive_local_radius_calls += local_radius > 0.0
+    counters.geometry_branch_solves += geometry.branch_solves
+    if size(geometry.normals, 2) == 0
+        return sage_gradient(
+            instance.model,
+            point,
+            radius,
+            y -> _task_loss(y, instance, config),
+            y -> _task_loss_gradient(y, instance, config);
+            samples = perturbations,
+            center_result = center,
+            store_records = false,
+        )
+    end
+    has_local = local_radius > 0.0
+    local_weight = has_local ? 0.4 : 0.0
+    base_weight = has_local ? 0.2 : 0.6
+    batch = sample_certified_geometry_smoothing(
+        rng,
+        length(point),
+        size(perturbations, 2),
+        geometry.normals;
+        beta = 2.0,
+        base_weight = base_weight,
+        local_weight = local_weight,
+        geometry_weight = 0.4,
+        local_scale = has_local ? local_radius / radius : 1.0,
+        focus_strength = 0.9,
+    )
+    counters.base_proposal_samples += count(==(:base), batch.components)
+    counters.local_proposal_samples += count(==(:local), batch.components)
+    counters.focused_proposal_samples += count(==(:focused), batch.components)
+    return sage_gradient(
+        instance.model,
+        point,
+        radius,
+        y -> _task_loss(y, instance, config),
+        y -> _task_loss_gradient(y, instance, config);
+        samples = batch.samples,
+        importance_weights = batch.importance_weights,
+        sampling = :provided,
+        center_result = center,
+        store_records = false,
+    )
+end
+
 function _gradient_for_sample(
     method,
     instance,
@@ -520,6 +665,8 @@ function _gradient_for_sample(
     config,
     counters,
     rng,
+    ;
+    adaptive_policy::AdaptiveSAGEPolicy = AdaptiveSAGEPolicy(),
 )
     center = lazy_branch_search(
         instance.model, point; store_prune_records = false,
@@ -564,6 +711,84 @@ function _gradient_for_sample(
             total .+= (residual / radius) .* ball_smoothing_score(direction; beta = 2.0)
         end
         return total ./ size(perturbations, 2), center_loss
+    elseif method == :sage_adaptive
+        _validate_adaptive_policy(adaptive_policy)
+        boundary_certificate = switching_certificate(
+            instance.model,
+            point,
+            radius;
+            center_result = center,
+        )
+        selected_samples = adaptive_policy.minimum_samples
+        if certifies_stability(boundary_certificate)
+            counters.adaptive_stable_calls += 1
+        else
+            counters.adaptive_probed_calls += 1
+            pilot = sample_antithetic_ball_smoothing(
+                rng,
+                length(point),
+                adaptive_policy.probe_samples;
+                beta = 2.0,
+            )
+            probe_switches = 0
+            for column in axes(pilot, 2)
+                result = lazy_branch_search(
+                    instance.model,
+                    point .+ radius .* pilot[:, column];
+                    store_prune_records = false,
+                )
+                result.status == :optimal || error(
+                    "Job-shop adaptive SAGE probe unresolved.",
+                )
+                counters.perturbed_global_searches += 1
+                counters.adaptive_probe_searches += 1
+                counters.lazy_leaf_solves += result.leaf_solves
+                counters.lazy_relaxation_solves += result.relaxation_solves
+                switched = result.choices != center.choices
+                probe_switches += switched
+                counters.switching_samples += switched
+                counters.logical_failures +=
+                    result.report === nothing || !result.report.feasible
+            end
+            counters.adaptive_probe_switches += probe_switches
+            selected_samples = adaptive_sample_budget(
+                probe_switches,
+                adaptive_policy,
+            )
+        end
+        if selected_samples == adaptive_policy.minimum_samples
+            counters.adaptive_minimum_calls += 1
+        elseif selected_samples == adaptive_policy.medium_samples
+            counters.adaptive_medium_calls += 1
+        elseif selected_samples == adaptive_policy.maximum_samples
+            counters.adaptive_maximum_calls += 1
+        else
+            error("Adaptive SAGE selected an undeclared sample budget.")
+        end
+        counters.adaptive_estimation_samples += selected_samples
+        estimation_samples = sample_antithetic_ball_smoothing(
+            rng,
+            length(point),
+            selected_samples;
+            beta = 2.0,
+        )
+        estimate = _multiscale_sage_estimate(
+            instance,
+            point,
+            estimation_samples,
+            radius,
+            config,
+            counters,
+            rng,
+            center;
+            boundary_certificate = boundary_certificate,
+        )
+        estimate.status == :ok || error(
+            "Job-shop adaptive SAGE gradient unresolved: " *
+            "status=$(estimate.status), unresolved=$(estimate.unresolved_samples).",
+        )
+        _record_sage_estimate!(counters, estimate)
+        return estimate.gradient, center_loss
     elseif method in (:sage_cert, :sage_geometry, :sage_multiscale)
         estimate = if method == :sage_cert
             sage_gradient(
@@ -594,68 +819,16 @@ function _gradient_for_sample(
                 center_result = center,
             )
         else
-            boundary_certificate = switching_certificate(
-                instance.model,
+            _multiscale_sage_estimate(
+                instance,
                 point,
-                radius;
-                center_result = center,
+                perturbations,
+                radius,
+                config,
+                counters,
+                rng,
+                center,
             )
-            relevant_groups = competitor_set(boundary_certificate)
-            geometry = switching_geometry(
-                instance.model,
-                point,
-                boundary_certificate.winner,
-                boundary_certificate.winner_point,
-                relevant_groups,
-            )
-            local_radius = certified_local_radius(boundary_certificate)
-            counters.local_radius_sum += local_radius
-            counters.local_radius_count += 1
-            counters.positive_local_radius_calls += local_radius > 0.0
-            counters.geometry_branch_solves += geometry.branch_solves
-            if size(geometry.normals, 2) == 0
-                sage_gradient(
-                    instance.model,
-                    point,
-                    radius,
-                    y -> _task_loss(y, instance, config),
-                    y -> _task_loss_gradient(y, instance, config);
-                    samples = perturbations,
-                    center_result = center,
-                    store_records = false,
-                )
-            else
-                has_local = local_radius > 0.0
-                local_weight = has_local ? 0.4 : 0.0
-                base_weight = has_local ? 0.2 : 0.6
-                batch = sample_certified_geometry_smoothing(
-                    rng,
-                    length(point),
-                    size(perturbations, 2),
-                    geometry.normals;
-                    beta = 2.0,
-                    base_weight = base_weight,
-                    local_weight = local_weight,
-                    geometry_weight = 0.4,
-                    local_scale = has_local ? local_radius / radius : 1.0,
-                    focus_strength = 0.9,
-                )
-                counters.base_proposal_samples += count(==(:base), batch.components)
-                counters.local_proposal_samples += count(==(:local), batch.components)
-                counters.focused_proposal_samples += count(==(:focused), batch.components)
-                sage_gradient(
-                    instance.model,
-                    point,
-                    radius,
-                    y -> _task_loss(y, instance, config),
-                    y -> _task_loss_gradient(y, instance, config);
-                    samples = batch.samples,
-                    importance_weights = batch.importance_weights,
-                    sampling = :provided,
-                    center_result = center,
-                    store_records = false,
-                )
-            end
         end
         estimate.status == :ok || error(
             "Job-shop SAGE gradient unresolved: status=$(estimate.status), " *
@@ -665,17 +838,7 @@ function _gradient_for_sample(
             "global_searches=$(estimate.perturbed_global_searches), " *
             "lazy_searches=$(estimate.lazy_global_searches).",
         )
-        counters.perturbed_global_searches += estimate.perturbed_global_searches
-        counters.reference_branch_solves += estimate.reference_branch_solves
-        counters.competitor_branch_solves += estimate.competitor_branch_solves
-        counters.geometry_branch_solves += estimate.geometry_branch_solves
-        counters.sample_certificates += estimate.sample_stability_certificates
-        counters.lazy_leaf_solves += estimate.lazy_leaf_solves
-        counters.lazy_relaxation_solves += estimate.lazy_relaxation_solves
-        counters.switching_samples += estimate.switching_samples
-        counters.unresolved_samples += estimate.unresolved_samples
-        counters.effective_sample_size_sum += estimate.importance_effective_sample_size
-        counters.effective_sample_size_count += 1
+        _record_sage_estimate!(counters, estimate)
         return estimate.gradient, center_loss
     end
     throw(ArgumentError("Unknown job-shop training method $(method)."))
@@ -686,7 +849,7 @@ end
 
 Return one output-space backward estimate and exact solver-work accounting at a
 fixed Job-Shop center without changing the network. This public diagnostic
-wrapper deliberately reuses the same Phase 10-13 backward implementation.
+wrapper deliberately reuses the same Phase 10-15 backward implementation.
 """
 function estimate_output_gradient(
     problem::JobShopProblem,
@@ -696,8 +859,9 @@ function estimate_output_gradient(
     seed::Integer;
     radius::Real = 0.5,
     samples::Int = 4,
+    adaptive_policy::AdaptiveSAGEPolicy = AdaptiveSAGEPolicy(),
 )
-    method in (:hard_local, :ste, :blackbox, :sage_multiscale) ||
+    method in (:hard_local, :ste, :blackbox, :sage_multiscale, :sage_adaptive) ||
         throw(ArgumentError("Unsupported diagnostic gradient method $(method)."))
     1 <= index <= size(problem.train.inputs, 2) || throw(BoundsError(
         axes(problem.train.inputs, 2), index,
@@ -719,6 +883,7 @@ function estimate_output_gradient(
     gradient, center_loss = _gradient_for_sample(
         method, instance, point, perturbations, Float64(radius),
         problem.config, counters, rng,
+        adaptive_policy = adaptive_policy,
     )
     all(isfinite, gradient) || error(
         "Diagnostic $(method) gradient contains non-finite values.",
@@ -740,6 +905,14 @@ function estimate_output_gradient(
         focused_samples = counters.focused_proposal_samples,
         logical_failures = counters.logical_failures,
         unresolved = counters.unresolved_samples,
+        adaptive_stable_calls = counters.adaptive_stable_calls,
+        adaptive_probed_calls = counters.adaptive_probed_calls,
+        adaptive_probe_searches = counters.adaptive_probe_searches,
+        adaptive_probe_switches = counters.adaptive_probe_switches,
+        adaptive_minimum_calls = counters.adaptive_minimum_calls,
+        adaptive_medium_calls = counters.adaptive_medium_calls,
+        adaptive_maximum_calls = counters.adaptive_maximum_calls,
+        adaptive_estimation_samples = counters.adaptive_estimation_samples,
     )
 end
 
@@ -964,10 +1137,11 @@ function train_method(
     learning_rate::Real = 1e-3,
     evaluation_interval::Int = 20,
     max_steps::Int = typemax(Int),
+    adaptive_policy::AdaptiveSAGEPolicy = AdaptiveSAGEPolicy(),
 )
     method in (
         :hard_local, :ste, :blackbox, :sage_cert, :sage_geometry,
-        :sage_multiscale,
+        :sage_multiscale, :sage_adaptive,
     ) ||
         throw(ArgumentError("Unsupported job-shop method $(method)."))
     samples > 0 && iseven(samples) ||
@@ -1017,6 +1191,7 @@ function train_method(
                 problem.config,
                 counters,
                 perturbation_rng,
+                adaptive_policy = adaptive_policy,
             )
         catch error_value
             error(
@@ -1063,6 +1238,14 @@ function train_method(
         base_proposal_samples = counters.base_proposal_samples,
         local_proposal_samples = counters.local_proposal_samples,
         focused_proposal_samples = counters.focused_proposal_samples,
+        adaptive_stable_calls = counters.adaptive_stable_calls,
+        adaptive_probed_calls = counters.adaptive_probed_calls,
+        adaptive_probe_searches = counters.adaptive_probe_searches,
+        adaptive_probe_switches = counters.adaptive_probe_switches,
+        adaptive_minimum_calls = counters.adaptive_minimum_calls,
+        adaptive_medium_calls = counters.adaptive_medium_calls,
+        adaptive_maximum_calls = counters.adaptive_maximum_calls,
+        adaptive_estimation_samples = counters.adaptive_estimation_samples,
     )
 end
 
