@@ -50,7 +50,13 @@ neural networks with mixed logical-linear constraints.
 > higher-switch slice, STE is significantly better than multiscale SAGE even
 > though SAGE is closer to the numerical smoothed-gradient reference. This
 > rules out the simple claim that harder branching alone exposes an STE
-> failure. The Phase 9 result has been independently reproduced on Kaggle at
+> failure. Phase 14 then separates objective mismatch from finite-sample
+> estimator variance on the frozen 3x4 family. Its normalized one-step test
+> finds no objective-mismatch vote (`0/3`) but confirms the variance mechanism
+> at two of three radii: SAGE `N=32` improves exact loss more than `N=4` at
+> `rho=0.30/0.50`. Hard-local is still strongest in this mostly non-switching
+> probe, so Phase 14 diagnoses the negative result rather than reversing it.
+> The Phase 9 result has been independently reproduced on Kaggle at
 > commit `f5dba1e`. See [`docs/SAGE_ALPHA.md`](docs/SAGE_ALPHA.md) and
 > [`docs/research_log`](docs/research_log) for the paper-facing audit trail.
 
@@ -58,8 +64,9 @@ neural networks with mixed logical-linear constraints.
 
 Upload and run [`SAGE_Kaggle_Reproducibility.ipynb`](SAGE_Kaggle_Reproducibility.ipynb)
 with Internet enabled. The notebook installs a pinned Julia release, clones this
-repository and instantiates dependencies. `RUN_MODE = "phase13"` (the default)
-runs the pre-registered difficulty/crossover map; `RUN_MODE = "phase12"` runs
+repository and instantiates dependencies. `RUN_MODE = "phase14"` (the default)
+runs the pre-registered objective-versus-variance diagnosis;
+`RUN_MODE = "phase13"` runs the difficulty/crossover map; `RUN_MODE = "phase12"` runs
 the five-method matched Job-Shop comparison; `RUN_MODE = "phase11"` runs
 the certified-multiscale mechanism gate; `RUN_MODE = "phase10"` reproduces
 the recorded negative fixed-radius diagnostic; `RUN_MODE = "phase9"`
@@ -68,8 +75,9 @@ the pre-registered geometry-aware novelty gate; `RUN_MODE = "phase8"` runs the
 five-seed UCI Iris pilot; `RUN_MODE = "phase7"` runs the controlled scaling
 gate; `RUN_MODE = "full"` runs every accepted gate and the full regression
 suite. Phase 10 is excluded from `full` because it is a diagnostic boundary,
-not an accepted gate. Phase 13 is also a standalone diagnostic because its
-crossover answer is negative and its full sweep is comparatively expensive.
+not an accepted gate. Phases 13 and 14 are also standalone diagnostics: Phase
+13 has a negative crossover answer, while Phase 14 diagnoses its mechanism
+without being an algorithmic quality gate.
 A GPU is not required
 because the current certified search and QP backend are CPU workloads.
 
@@ -383,6 +391,22 @@ The frozen result reports `PHASE13_DIFFICULTY_MAP=PASS` and
 pass, but STE is significantly better on the hardest higher-switch stratum.
 See
 [`docs/research_log/2026-11-14_phase13_difficulty_map.md`](docs/research_log/2026-11-14_phase13_difficulty_map.md).
+
+Run the Phase 14 objective-versus-variance diagnosis:
+
+```bash
+SAGE_PHASE14_PROFILE=pilot julia --project=. scripts/benchmark_phase14_mechanism_diagnosis.jl
+```
+
+This freezes a three-radius and four-sample-budget grid on the 3x4 Job-Shop
+family. Two independent 64-sample black-box gradients form the numerical
+reference, and every candidate takes the same normalized output-space step.
+The pilot reports `PHASE14_MECHANISM_DIAGNOSIS=PASS` and
+`PHASE14_DIAGNOSIS=ESTIMATOR_VARIANCE`: the declared smoothed objective is not
+shown to be misaligned, while finite-sample SAGE variance is confirmed at two
+of three radii. This is an honest diagnostic result, not evidence that SAGE
+beats hard-local or STE. See
+[`docs/research_log/2026-11-14_phase14_mechanism_diagnosis.md`](docs/research_log/2026-11-14_phase14_mechanism_diagnosis.md).
 
 ---
 

@@ -99,4 +99,7 @@ Logs:
 - [`2026-11-14_phase13_difficulty_map.md`](2026-11-14_phase13_difficulty_map.md) —
   pre-registers the full 3x3/3x4, short/long-horizon crossover map, shared
   switching strata and high-sample gradient-alignment audit.
+- [`2026-11-14_phase14_mechanism_diagnosis.md`](2026-11-14_phase14_mechanism_diagnosis.md) —
+  separates smoothed-objective mismatch from finite-sample variance using a
+  fixed radius/sample grid, normalized one-step tests and common randomness.
 

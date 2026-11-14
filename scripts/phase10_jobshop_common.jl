@@ -19,6 +19,7 @@ export initialize_network
 export prepare_problem
 export pretrain_network
 export output_gradient_audit
+export estimate_output_gradient
 export switching_exposure_partition
 export train_method
 
@@ -678,6 +679,68 @@ function _gradient_for_sample(
         return estimate.gradient, center_loss
     end
     throw(ArgumentError("Unknown job-shop training method $(method)."))
+end
+
+"""
+    estimate_output_gradient(problem, network, index, method, seed; radius, samples)
+
+Return one output-space backward estimate and exact solver-work accounting at a
+fixed Job-Shop center without changing the network. This public diagnostic
+wrapper deliberately reuses the same Phase 10-13 backward implementation.
+"""
+function estimate_output_gradient(
+    problem::JobShopProblem,
+    network::JobShopMLP,
+    index::Int,
+    method::Symbol,
+    seed::Integer;
+    radius::Real = 0.5,
+    samples::Int = 4,
+)
+    method in (:hard_local, :ste, :blackbox, :sage_multiscale) ||
+        throw(ArgumentError("Unsupported diagnostic gradient method $(method)."))
+    1 <= index <= size(problem.train.inputs, 2) || throw(BoundsError(
+        axes(problem.train.inputs, 2), index,
+    ))
+    isfinite(radius) && radius > 0 || throw(ArgumentError(
+        "diagnostic radius must be finite and positive.",
+    ))
+    samples > 0 && iseven(samples) || throw(ArgumentError(
+        "diagnostic samples must be a positive even integer.",
+    ))
+    point, _ = _forward(network, problem.train.inputs[:, index])
+    instance = problem.train.instances[index]
+    rng = MersenneTwister(Int(seed))
+    perturbations = method in (:blackbox, :sage_multiscale) ?
+        sample_antithetic_ball_smoothing(
+            rng, length(point), samples; beta = 2.0,
+        ) : zeros(length(point), samples)
+    counters = TrainingCounters()
+    gradient, center_loss = _gradient_for_sample(
+        method, instance, point, perturbations, Float64(radius),
+        problem.config, counters, rng,
+    )
+    all(isfinite, gradient) || error(
+        "Diagnostic $(method) gradient contains non-finite values.",
+    )
+    ess = counters.effective_sample_size_count > 0 ?
+        counters.effective_sample_size_sum / counters.effective_sample_size_count : NaN
+    return (
+        point = point,
+        gradient = gradient,
+        center_loss = center_loss,
+        global_searches = counters.perturbed_global_searches,
+        branch_solves = counters.center_leaf_solves +
+            counters.reference_branch_solves + counters.competitor_branch_solves +
+            counters.geometry_branch_solves + counters.lazy_leaf_solves,
+        ess = ess,
+        positive_local_calls = counters.positive_local_radius_calls,
+        base_samples = counters.base_proposal_samples,
+        local_samples = counters.local_proposal_samples,
+        focused_samples = counters.focused_proposal_samples,
+        logical_failures = counters.logical_failures,
+        unresolved = counters.unresolved_samples,
+    )
 end
 
 """
