@@ -16,6 +16,7 @@ import MathOptInterface as MOI
     include("test_phase7_scaling.jl")
     include("test_phase8_iris.jl")
     include("test_phase9_cooling.jl")
+    include("test_phase10_jobshop.jl")
     include("test_standard_form.jl")
     include("test_hulls.jl")
     include("test_projection_backend.jl")

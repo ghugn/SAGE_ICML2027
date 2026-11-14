@@ -210,6 +210,158 @@ function _analytic_branch_projection(
 end
 
 """
+Project onto a feasible polyhedral branch with a primal active-set method.
+
+This fallback starts from the feasible point returned by the LP retry.  It is
+used only when the primary HiGHS QP does not return `OPTIMAL`.  Unlike the
+enumerative fallback, its work is controlled by active-set iterations rather
+than by enumerating combinations of constraints, which is important once the
+output dimension exceeds the small cooling-control examples.
+"""
+function _active_set_branch_projection(
+    model::DisjunctiveModel,
+    yhat::AbstractVector{<:Real},
+    assignments::AbstractVector{<:Integer},
+    feasible_start::AbstractVector{<:Real};
+    feasibility_tol::Real = 1e-6,
+    max_iterations::Int = 10_000,
+)
+    n = model.n_outputs
+    inequality_rows = Vector{Vector{Float64}}()
+    inequality_bounds = Float64[]
+    equality_rows = Vector{Vector{Float64}}()
+    equality_bounds = Float64[]
+
+    function add_constraint!(constraint::LinearConstraint)
+        row = Float64.(constraint.a)
+        if constraint.sense == :<=
+            push!(inequality_rows, row)
+            push!(inequality_bounds, constraint.b)
+        elseif constraint.sense == :>=
+            push!(inequality_rows, -row)
+            push!(inequality_bounds, -constraint.b)
+        else
+            push!(equality_rows, row)
+            push!(equality_bounds, constraint.b)
+        end
+        return nothing
+    end
+
+    for coordinate in 1:n
+        if isfinite(model.lb[coordinate])
+            row = zeros(n)
+            row[coordinate] = -1.0
+            push!(inequality_rows, row)
+            push!(inequality_bounds, -model.lb[coordinate])
+        end
+        if isfinite(model.ub[coordinate])
+            row = zeros(n)
+            row[coordinate] = 1.0
+            push!(inequality_rows, row)
+            push!(inequality_bounds, model.ub[coordinate])
+        end
+    end
+    foreach(add_constraint!, model.constraints)
+    for (rule_index, choice) in enumerate(assignments)
+        choice == 0 && continue
+        foreach(add_constraint!, model.disjunctions[rule_index].disjuncts[choice])
+    end
+
+    inequalities = isempty(inequality_rows) ? zeros(0, n) :
+        reduce(vcat, permutedims.(inequality_rows))
+    equalities_all = isempty(equality_rows) ? zeros(0, n) :
+        reduce(vcat, permutedims.(equality_rows))
+    point = Float64.(yhat)
+    current = Float64.(feasible_start)
+    tolerance = max(Float64(feasibility_tol), 1e-9)
+    rank_tolerance = max(1e-10, tolerance * 1e-3)
+
+    length(current) == n || return nothing
+    all(isfinite, current) || return nothing
+    all(inequalities * current .<= inequality_bounds .+ tolerance) || return nothing
+    all(abs.(equalities_all * current .- equality_bounds) .<= tolerance) ||
+        return nothing
+
+    # Keep an independent equality basis so every working-set multiplier is
+    # unique. Redundant rows are already satisfied by the feasible LP point.
+    equality_indices = Int[]
+    equality_basis = zeros(0, n)
+    for index in axes(equalities_all, 1)
+        candidate_rows = vcat(equality_basis, equalities_all[index:index, :])
+        if rank(candidate_rows; atol = rank_tolerance) > size(equality_basis, 1)
+            push!(equality_indices, index)
+            equality_basis = candidate_rows
+        end
+    end
+    equalities = equalities_all[equality_indices, :]
+    reduced_equality_bounds = equality_bounds[equality_indices]
+    working = Int[]
+
+    function working_rows()
+        isempty(working) && return equalities
+        return vcat(equalities, inequalities[working, :])
+    end
+
+    function add_working!(index::Int)
+        index in working && return true
+        rows = working_rows()
+        candidate_rows = vcat(rows, inequalities[index:index, :])
+        if rank(candidate_rows; atol = rank_tolerance) > size(rows, 1)
+            push!(working, index)
+            return true
+        end
+        # A dependent tight row adds no new face. It is safe to ignore only
+        # when the current working face already satisfies it numerically.
+        return abs(dot(inequalities[index, :], current) - inequality_bounds[index]) <=
+            tolerance
+    end
+
+    for _ in 1:max_iterations
+        rows = working_rows()
+        bounds = isempty(working) ? reduced_equality_bounds :
+            vcat(reduced_equality_bounds, inequality_bounds[working])
+        multipliers = isempty(bounds) ? Float64[] :
+            (rows * transpose(rows)) \ (rows * point - bounds)
+        candidate = point - transpose(rows) * multipliers
+        all(isfinite, candidate) || return nothing
+        direction = candidate - current
+
+        alpha = 1.0
+        blocker = 0
+        working_set = Set(working)
+        for index in axes(inequalities, 1)
+            index in working_set && continue
+            directional_change = dot(inequalities[index, :], direction)
+            directional_change > rank_tolerance || continue
+            step = (inequality_bounds[index] -
+                    dot(inequalities[index, :], current)) / directional_change
+            if step < alpha - rank_tolerance
+                alpha = clamp(step, 0.0, 1.0)
+                blocker = index
+            end
+        end
+
+        if blocker != 0 && alpha < 1.0 - rank_tolerance
+            current .+= alpha .* direction
+            add_working!(blocker) || return nothing
+            continue
+        end
+
+        current = candidate
+        all(inequalities * current .<= inequality_bounds .+ tolerance) || return nothing
+        active_multipliers = multipliers[(length(reduced_equality_bounds) + 1):end]
+        if isempty(active_multipliers) || minimum(active_multipliers) >= -tolerance
+            all(abs.(equalities_all * current .- equality_bounds) .<= tolerance) ||
+                return nothing
+            return current
+        end
+
+        deleteat!(working, argmin(active_multipliers))
+    end
+    return nothing
+end
+
+"""
     project_branch(model, yhat, choices; solver=nothing, feasibility_tol=1e-6)
 
 Project `yhat` onto one selected original branch. No convex-hull variables or
@@ -308,12 +460,24 @@ function project_branch(
             )
         end
         if feasibility_status == MOI.OPTIMAL
-            projected = _analytic_branch_projection(
+            feasible_start = Float64.(value.(y))
+            projected = _active_set_branch_projection(
                 model,
                 yhat,
-                branch_choices;
+                branch_choices,
+                feasible_start;
                 feasibility_tol = feasibility_tol,
             )
+            fallback_name = "primal active-set fallback"
+            if projected === nothing
+                projected = _analytic_branch_projection(
+                    model,
+                    yhat,
+                    branch_choices;
+                    feasibility_tol = feasibility_tol,
+                )
+                fallback_name = "enumerative active-set fallback"
+            end
             if projected !== nothing
                 objective = 0.5 * sum(abs2, projected .- Float64.(yhat))
                 report = check_feasibility(model, projected; atol = feasibility_tol)
@@ -334,7 +498,7 @@ function project_branch(
                         solve_time + (time_ns() - fallback_started) / 1e9,
                         true,
                         false,
-                        "QP status $(solver_status); resolved by analytic active-set fallback.",
+                        "QP status $(solver_status); resolved by $(fallback_name).",
                     )
                 end
             end

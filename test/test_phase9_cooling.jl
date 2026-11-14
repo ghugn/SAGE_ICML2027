@@ -36,7 +36,7 @@ using Statistics
         [1, 1, 2],
     )
     @test retry_branch.accepted
-    @test occursin("analytic active-set fallback", something(retry_branch.message, ""))
+    @test occursin("active-set fallback", something(retry_branch.message, ""))
     @test lazy_branch_search(
         retry_model,
         [0.003814262845725086, -0.13353903851046123, -0.10538768483127478];

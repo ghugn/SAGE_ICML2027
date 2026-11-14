@@ -27,19 +27,27 @@ neural networks with mixed logical-linear constraints.
 > MSE (`0.04178` versus `0.04385`). Its paired 95% interval includes zero and
 > the public upstream repository omits the original experiment constants, so
 > this is explicitly a paper-spec reconstruction rather than a reproduced
-> paper result. The same frozen result has now been independently reproduced
-> on Kaggle at commit `f5dba1e`. See [`docs/SAGE_ALPHA.md`](docs/SAGE_ALPHA.md) and
+> paper result. Phase 10 adds a native 3-by-3 job-shop diagnostic with nine
+> machine-order disjunctions. It preserves exact feasibility and improves the
+> black-box mean OOD task loss by 2.43%, but does not meet its frozen 10%
+> quality advantage or compute-reduction gate; STE and hard-local remain
+> numerically better. This negative boundary is retained rather than promoted
+> as a pass. The Phase 9 result has been independently reproduced on Kaggle at
+> commit `f5dba1e`. See [`docs/SAGE_ALPHA.md`](docs/SAGE_ALPHA.md) and
 > [`docs/research_log`](docs/research_log) for the paper-facing audit trail.
 
 ## Kaggle reproduction
 
 Upload and run [`SAGE_Kaggle_Reproducibility.ipynb`](SAGE_Kaggle_Reproducibility.ipynb)
 with Internet enabled. The notebook installs a pinned Julia release, clones this
-repository and instantiates dependencies. `RUN_MODE = "phase9"` (the default)
-runs the native-disjunction cooling-control pilot; `RUN_MODE = "alpha"` runs
+repository and instantiates dependencies. `RUN_MODE = "phase10"` (the default)
+reproduces the recorded negative job-shop diagnostic; `RUN_MODE = "phase9"`
+runs the accepted cooling-control pilot; `RUN_MODE = "alpha"` runs
 the pre-registered geometry-aware novelty gate; `RUN_MODE = "phase8"` runs the
 five-seed UCI Iris pilot; `RUN_MODE = "phase7"` runs the controlled scaling
-gate; `RUN_MODE = "full"` runs every accepted gate and the full regression suite. A GPU is not required
+gate; `RUN_MODE = "full"` runs every accepted gate and the full regression
+suite. Phase 10 is excluded from `full` because it is a diagnostic boundary,
+not an accepted gate. A GPU is not required
 because the current certified search and QP backend are CPU workloads.
 
 The package lets users define constraints of the form
@@ -286,6 +294,23 @@ and 65.04% fewer perturbed global searches for geometry SAGE than black-box.
 The paired OOD-MSE interval still includes zero. See
 [`docs/research_log/2026-11-14_phase9_cooling_control.md`](docs/research_log/2026-11-14_phase9_cooling_control.md)
 for the retained solver failure, repair, frozen gates and interpretation.
+
+Run the Phase 10 native-disjunction job-shop diagnostic:
+
+```bash
+SAGE_PHASE10_PROFILE=pilot julia --project=. scripts/benchmark_phase10_jobshop.jl
+```
+
+This controlled family has three jobs, three machines, nine operations, nine
+native pairwise no-overlap disjunctions and 512 complete branches. A MILP
+oracle minimizes makespan; a deliberately suboptimal serial-dispatch schedule
+defines the adaptation initialization. The frozen five-seed result reports
+`PHASE10_JOBSHOP_DIAGNOSTIC=FAIL`: safety, branch switching, learning,
+matched-quality and ESS pass, but SAGE reduces neither global searches nor OOD
+loss by the pre-registered 10%. SAGE-Geometry is 2.43% better than black-box on
+mean OOD task loss, while STE and hard-local are numerically better. This is a
+useful negative field boundary, not evidence of job-shop superiority. See
+[`docs/research_log/2026-11-14_phase10_jobshop.md`](docs/research_log/2026-11-14_phase10_jobshop.md).
 
 ---
 
