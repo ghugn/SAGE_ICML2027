@@ -155,3 +155,52 @@ method is repeated after interruption, while every fully completed method is
 reused. The frozen five-method, five-seed, 1024-update scientific design and
 all acceptance criteria remain unchanged. This hardening is evaluation-only
 and must not be described as a methodological contribution.
+
+## 2026-11-15 frozen Kaggle result
+
+The registered serial pilot completed on Kaggle at commit
+`2c176ece1d572034846c6575d0d81f741181acf6`. The long-horizon stage took
+`31704.617` seconds (about 8 h 48 min), emitted all 100 checkpoint rows and
+passed completion, safety, monotone-work, SAGE-ESS, adaptive-accounting and
+final-checkpoint gates. `full_tests=SKIPPED` is expected for the isolated
+`phase16` run mode and is not a failed gate.
+
+The preregistered primary classification was positive:
+
+- fixed SAGE `N=32` minus STE final OOD loss was `-0.0244156`, paired 95% CI
+  `[-0.0454358, -0.00339537]`;
+- fixed SAGE `N=32` minus hard-local was `-0.0410856`, paired 95% CI
+  `[-0.0600219, -0.0221492]`;
+- both intervals exclude zero, and the runner emitted
+  `PHASE16_CROSSOVER=OBSERVED`.
+
+Mean OOD loss changed with training horizon:
+
+| updates | hard-local | STE | SAGE N=4 | SAGE N=32 | adaptive SAGE |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 0.12462 | 0.11606 | 0.12599 | 0.11717 | 0.11998 |
+| 64 | 0.08356 | 0.07342 | 0.07731 | **0.06682** | 0.07041 |
+| 256 | 0.08043 | 0.06391 | **0.05136** | 0.05275 | 0.05475 |
+| 1024 | 0.08035 | 0.06368 | **0.03352** | 0.03927 | 0.03940 |
+
+Thus the short 16-update comparison would have missed the registered effect.
+SAGE `N=32` first leads the mean table at 64 updates, while `N=4` becomes the
+best mean curve by 256 updates and remains best at 1024. At the final horizon,
+`N=4` has 47.36% lower mean OOD loss than STE and 14.62% lower mean loss than
+`N=32`. These `N=4` percentages are descriptive secondary comparisons; no
+paired interval for `N=4` was emitted by the frozen runner.
+
+The positive quality result does not remove the compute limitation. Mean final
+training time was 175.17 s for STE, 675.97 s for `N=4`, 3333.69 s for `N=32`
+and 1815.02 s for adaptive SAGE. Relative to STE, these are approximately
+3.86x, 19.03x and 10.36x. `N=4` descriptively dominates `N=32` at the final
+checkpoint in both mean loss and time, making sample-budget efficiency the
+next systems/method question. The adaptive controller did not recover that
+frontier.
+
+This is controlled five-seed Job-Shop evidence, not yet a broad application or
+paper-level generalization claim. The serial run remains a valid baseline for
+the later parallel backend. Its evidence bundle must preserve the CSV, JSON,
+stage log and `completed_methods/*.jls` files. The current cache stores metrics
+and trajectories, not reloadable neural-network weights; future runners must
+save explicit model checkpoints.
