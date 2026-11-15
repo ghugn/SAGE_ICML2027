@@ -112,4 +112,8 @@ Logs:
 - [`2026-11-15_parallel_sample_backend.md`](2026-11-15_parallel_sample_backend.md)
   — post-Phase-16 implementation work for deterministic multi-core SAGE sample
   evaluation; not a change to the estimator mathematics.
+- [`2026-11-15_phase17_sample_efficiency.md`](2026-11-15_phase17_sample_efficiency.md)
+  — freezes the new-seed `N=2/4/8/16/32` confirmatory frontier, mandatory
+  serial/threaded/resume/ETA preflight, matched-time STE control and real model
+  checkpoint contract.
 

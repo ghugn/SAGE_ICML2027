@@ -64,11 +64,10 @@ neural networks with mixed logical-linear constraints.
 > and probe overhead raises global searches by 8.21% over fixed `N=32`. This
 > negative result rules out exact independent probes as a useful controller on
 > this boundary-active workload.
-> Phase 16 is now pre-registered and implemented to close the remaining
-> training-horizon gap. It checkpoints uninterrupted 3x4 training at
-> 1/4/16/64 exact epochs for five methods and five seeds. Only its smoke profile
-> has been run locally; the several-hour pilot is delegated to Kaggle, so no
-> long-horizon crossover claim is made yet.
+> Phase 16 has now observed a long-horizon crossover on Kaggle: both fixed
+> SAGE budgets beat STE and hard-local at 1024 updates, with `N=4` the most
+> promising compute/quality point. Phase 17 freezes a new-seed sample-efficiency
+> confirmation and locks it behind parity, exact-resume, speedup and ETA gates.
 > The Phase 9 result has been independently reproduced on Kaggle at
 > commit `f5dba1e`. See [`docs/SAGE_ALPHA.md`](docs/SAGE_ALPHA.md) and
 > [`docs/research_log`](docs/research_log) for the paper-facing audit trail.
@@ -77,8 +76,11 @@ neural networks with mixed logical-linear constraints.
 
 Upload and run [`SAGE_Kaggle_Reproducibility.ipynb`](SAGE_Kaggle_Reproducibility.ipynb)
 with Internet enabled. The notebook installs a pinned Julia release, clones this
-repository and instantiates dependencies. `RUN_MODE = "phase16"` (the default)
-runs the several-hour 1/4/16/64-epoch convergence study;
+repository and instantiates dependencies. `RUN_MODE = "phase17_preflight"`
+(the safe default) only measures parity, resume, speedup and ETA. After review,
+`RUN_MODE = "phase17_confirmatory"` repeats that gate and, only if it passes,
+runs the new-seed `N={2,4,8,16,32}` frontier. `RUN_MODE = "phase16"` reproduces
+the earlier long-horizon convergence study;
 `RUN_MODE = "phase15"` reproduces the adaptive-controller negative result;
 `RUN_MODE = "phase14"` runs the objective-versus-variance diagnosis;
 `RUN_MODE = "phase13"` runs the difficulty/crossover map; `RUN_MODE = "phase12"` runs
@@ -90,7 +92,7 @@ the pre-registered geometry-aware novelty gate; `RUN_MODE = "phase8"` runs the
 five-seed UCI Iris pilot; `RUN_MODE = "phase7"` runs the controlled scaling
 gate; `RUN_MODE = "full"` runs every accepted gate and the full regression
 suite. Phase 10 is excluded from `full` because it is a diagnostic boundary,
-not an accepted gate. Phases 13-16 are also standalone diagnostics: Phase
+not an accepted gate. Phases 13-17 are also standalone diagnostics: Phase
 13 has a negative crossover answer, while Phase 14 diagnoses its mechanism
 without being an algorithmic quality gate, and Phase 15 retains a failed
 compute gate rather than promoting its controller. Phase 16 is excluded because
@@ -456,6 +458,22 @@ heartbeat is printed every 64 updates. The full pilot is intentionally not run
 on the development machine.
 See
 [`docs/research_log/2026-11-14_phase16_long_horizon.md`](docs/research_log/2026-11-14_phase16_long_horizon.md).
+
+Run the Phase 17 systems preflight before any confirmatory experiment:
+
+```bash
+SAGE_PHASE17_PROFILE=preflight julia --threads=auto --project=. scripts/benchmark_phase17_sample_efficiency.jl
+```
+
+The preflight uses discovery seed 1, verifies exact serial/threaded and resume
+parity, requires at least `1.30x` end-to-end speedup, freezes a matched-time STE
+budget and rejects an estimated run longer than four hours. The confirmatory
+runner remains locked until a passing plan is explicitly supplied. The Kaggle
+notebook defaults to `phase17_preflight`; after reviewing the ETA, change it to
+`phase17_confirmatory`. That mode evaluates untouched seeds 6-10 across
+`N={2,4,8,16,32}`, saves exact optimizer states every 64 updates and verifies
+every final model checkpoint after reload. See
+[`docs/research_log/2026-11-15_phase17_sample_efficiency.md`](docs/research_log/2026-11-15_phase17_sample_efficiency.md).
 
 ---
 

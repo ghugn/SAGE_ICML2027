@@ -51,6 +51,8 @@ phase13_difficulty_map*_results/
 phase14_mechanism*_results/
 phase15_adaptive*_results/
 phase16_long_horizon*_results/
+phase17_sample_efficiency*_results/
+tmp_phase17*/
 tmp_phase7*/
 tmp_phase8*/
 

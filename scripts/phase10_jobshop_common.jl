@@ -1156,6 +1156,9 @@ function train_method(
     checkpoint_steps::AbstractVector{<:Integer} = Int[],
     progress_callback = nothing,
     parallel_sage_samples::Bool = false,
+    resume_state = nothing,
+    state_checkpoint_interval::Int = 0,
+    state_checkpoint_callback = nothing,
 )
     method in (
         :hard_local, :ste, :blackbox, :sage_cert, :sage_geometry,
@@ -1168,10 +1171,13 @@ function train_method(
         throw(ArgumentError("evaluation_interval must be positive."))
     all(step -> step > 0, checkpoint_steps) ||
         throw(ArgumentError("checkpoint_steps must contain only positive integers."))
-    network = deepcopy(pretrained)
-    state = _adam_state(network)
-    counters = TrainingCounters()
-    trajectory = NamedTuple[]
+    state_checkpoint_interval >= 0 || throw(ArgumentError(
+        "state_checkpoint_interval must be nonnegative.",
+    ))
+    state_checkpoint_interval == 0 || state_checkpoint_callback !== nothing ||
+        throw(ArgumentError(
+            "state_checkpoint_callback is required when state_checkpoint_interval > 0.",
+        ))
     rng = MersenneTwister(1_060_000 + Int(seed))
     count = size(problem.train.inputs, 2)
     orders = [randperm(rng, count) for _ in 1:epochs]
@@ -1180,7 +1186,42 @@ function train_method(
     all(step -> step <= length(sequence), requested_checkpoints) ||
         throw(ArgumentError("checkpoint_steps cannot exceed the executed training steps."))
     checkpoint_set = Set(requested_checkpoints)
-    checkpoint_networks = Dict{Int, JobShopMLP}()
+    if resume_state === nothing
+        network = deepcopy(pretrained)
+        state = _adam_state(network)
+        counters = TrainingCounters()
+        trajectory = NamedTuple[]
+        checkpoint_networks = Dict{Int, JobShopMLP}()
+        completed_steps = 0
+        elapsed_offset = 0.0
+    else
+        required = (
+            :network, :adam_state, :counters, :trajectory,
+            :checkpoint_networks, :completed_steps, :elapsed_seconds,
+        )
+        all(name -> hasproperty(resume_state, name), required) || throw(
+            ArgumentError("resume_state is missing required training fields."),
+        )
+        network = deepcopy(resume_state.network)
+        state = deepcopy(resume_state.adam_state)
+        counters = deepcopy(resume_state.counters)
+        trajectory = deepcopy(resume_state.trajectory)
+        checkpoint_networks = deepcopy(resume_state.checkpoint_networks)
+        completed_steps = Int(resume_state.completed_steps)
+        elapsed_offset = Float64(resume_state.elapsed_seconds)
+        0 <= completed_steps <= length(sequence) || throw(ArgumentError(
+            "resume_state completed_steps is outside the requested training sequence.",
+        ))
+        state.step == completed_steps || throw(ArgumentError(
+            "resume_state Adam step does not match completed_steps.",
+        ))
+        isempty(trajectory) && throw(ArgumentError(
+            "resume_state trajectory must contain the initial record.",
+        ))
+        trajectory[end].step <= completed_steps || throw(ArgumentError(
+            "resume_state trajectory extends beyond completed_steps.",
+        ))
+    end
 
     function record!(step, elapsed_seconds)
         iid = evaluate_network(network, problem.iid; config = problem.config)
@@ -1215,9 +1256,24 @@ function train_method(
         progress_callback === nothing || progress_callback(last(trajectory))
     end
 
-    record!(0, 0.0)
+    resume_state === nothing && record!(0, 0.0)
     started = time_ns()
-    for (step, index) in enumerate(sequence)
+    function elapsed_seconds()
+        return elapsed_offset + (time_ns() - started) / 1e9
+    end
+    function state_snapshot(step)
+        return (
+            network = deepcopy(network),
+            adam_state = deepcopy(state),
+            counters = deepcopy(counters),
+            trajectory = deepcopy(trajectory),
+            checkpoint_networks = deepcopy(checkpoint_networks),
+            completed_steps = step,
+            elapsed_seconds = elapsed_seconds(),
+        )
+    end
+    for step in (completed_steps + 1):length(sequence)
+        index = sequence[step]
         gradients = _zero_gradients(network)
         point, cache = _forward(network, problem.train.inputs[:, index])
         perturbation_rng = MersenneTwister(
@@ -1254,10 +1310,14 @@ function train_method(
         step in checkpoint_set && (checkpoint_networks[step] = deepcopy(network))
         if step % evaluation_interval == 0 || step == length(sequence) ||
                 step in checkpoint_set
-            record!(step, (time_ns() - started) / 1e9)
+            record!(step, elapsed_seconds())
+        end
+        if state_checkpoint_interval > 0 &&
+                (step % state_checkpoint_interval == 0 || step == length(sequence))
+            state_checkpoint_callback(state_snapshot(step))
         end
     end
-    training_seconds = (time_ns() - started) / 1e9
+    training_seconds = elapsed_seconds()
     mean_ess = counters.effective_sample_size_count > 0 ?
         counters.effective_sample_size_sum / counters.effective_sample_size_count : NaN
     mean_local_radius = counters.local_radius_count > 0 ?
