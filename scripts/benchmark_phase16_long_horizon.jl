@@ -150,6 +150,12 @@ end
 function main()
     profile = Symbol(lowercase(get(ENV, "SAGE_PHASE16_PROFILE", "smoke")))
     setup = configuration(profile)
+    parallel_samples = lowercase(get(
+        ENV, "SAGE_PHASE16_PARALLEL_SAMPLES", "0",
+    )) in ("1", "true", "yes")
+    parallel_samples && Threads.nthreads() < 2 && error(
+        "SAGE_PHASE16_PARALLEL_SAMPLES requires at least two Julia threads.",
+    )
     output_directory = abspath(get(
         ENV, "SAGE_PHASE16_OUTPUT", "phase16_long_horizon_smoke_results",
     ))
@@ -238,7 +244,7 @@ function main()
         for label in execution_order
             spec = method_spec(label)
             signature = (
-                schema = 1,
+                schema = 2,
                 profile = string(profile),
                 seed = seed,
                 method = string(label),
@@ -247,6 +253,7 @@ function main()
                 samples = spec.samples,
                 radius = setup.radius,
                 learning_rate = setup.learning_rate,
+                parallel_samples = parallel_samples,
             )
             cache_path = joinpath(
                 cache_directory, "seed_$(seed)_$(label).jls",
@@ -271,7 +278,8 @@ function main()
                     "[phase16-progress] seed=$(seed) method=$(label) " *
                     "step=$(item.step)/$(maximum_horizon) " *
                     "seconds=$(round(item.elapsed_seconds; digits = 1)) " *
-                    "searches=$(item.perturbed_global_searches)",
+                    "searches=$(item.perturbed_global_searches) " *
+                    "sample_threads=$(item.sample_threads_used)",
                 )
                 flush(stdout)
             end
@@ -286,6 +294,7 @@ function main()
                 adaptive_policy = policy,
                 checkpoint_steps = setup.horizons,
                 progress_callback = progress_callback,
+                parallel_sage_samples = parallel_samples,
             )
             for item in result.trajectory
                 push!(trajectories, (
@@ -296,6 +305,7 @@ function main()
                     global_searches = item.perturbed_global_searches,
                     branch_solves = item.complete_branch_solves,
                     mean_ess = item.mean_effective_sample_size,
+                    sample_threads_used = item.sample_threads_used,
                 ))
             end
             for horizon in setup.horizons
@@ -334,12 +344,14 @@ function main()
                     medium_calls = trace.adaptive_medium_calls,
                     maximum_calls = trace.adaptive_maximum_calls,
                     estimation_samples = trace.adaptive_estimation_samples,
+                    sample_threads_used = trace.sample_threads_used,
                 ))
             end
             println(
                 "[phase16] seed=$(seed) method=$(label) steps=$(maximum_horizon) " *
                 "seconds=$(round(result.training_seconds; digits = 3)) " *
-                "searches=$(result.perturbed_global_searches)",
+                "searches=$(result.perturbed_global_searches) " *
+                "sample_threads=$(result.sample_threads_used)",
             )
             flush(stdout)
             atomic_serialize(
@@ -474,6 +486,10 @@ function main()
 
     println("SAGE Phase 16 long-horizon convergence study ", profile)
     println("Julia version: ", VERSION)
+    println(
+        "SAGE sample parallelism/Julia threads: ",
+        parallel_samples, "/", Threads.nthreads(),
+    )
     println("Contract: uninterrupted training; exact checkpoints; fixed rho/backwards")
     println("horizon\tepochs\tmethod\tOOD loss\thigher-switch loss\tseconds\tsearches\tbranch solves")
     for horizon in setup.horizons, label in labels

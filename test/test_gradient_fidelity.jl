@@ -113,6 +113,48 @@ end
     end
 end
 
+@testset "SAGE threaded samples preserve serial output and accounting" begin
+    model = DisjunctiveModel(1)
+    set_bounds!(model, lower = [-2.0], upper = [2.0])
+    add_disjunction!(
+        model,
+        [LinearConstraint([1.0], :<=, -1.0)],
+        [LinearConstraint([1.0], :>=, 1.0)],
+    )
+    loss(y) = (y[1] - 1.5)^2
+    loss_gradient(y) = [2.0 * (y[1] - 1.5)]
+    directions = [
+        -0.95, -0.85, -0.70, -0.50, -0.30, -0.10, 0.10, 0.30,
+        0.50, 0.70, 0.81, 0.85, 0.89, 0.92, 0.95, 0.97,
+    ]
+    samples = reshape(directions, 1, :)
+    serial = sage_gradient(
+        model, [-0.4], 0.5, loss, loss_gradient;
+        samples = samples, parallel_samples = false,
+    )
+    threaded = sage_gradient(
+        model, [-0.4], 0.5, loss, loss_gradient;
+        samples = samples, parallel_samples = true,
+    )
+
+    @test threaded.status == serial.status == :ok
+    @test threaded.gradient == serial.gradient
+    @test threaded.reference_branch_solves == serial.reference_branch_solves
+    @test threaded.perturbed_global_searches == serial.perturbed_global_searches
+    @test threaded.competitor_branch_solves == serial.competitor_branch_solves
+    @test threaded.sample_stability_certificates ==
+        serial.sample_stability_certificates
+    @test threaded.switching_samples == serial.switching_samples
+    @test threaded.unresolved_samples == serial.unresolved_samples == 0
+    @test [record.u for record in threaded.records] ==
+        [record.u for record in serial.records]
+    @test [record.global_choices for record in threaded.records] ==
+        [record.global_choices for record in serial.records]
+    @test threaded.sample_threads_used ==
+        min(Threads.nthreads(), length(directions))
+    @test serial.sample_threads_used == 1
+end
+
 @testset "SAGE stable fast path follows equation 17" begin
     model = DisjunctiveModel(1)
     add_disjunction!(

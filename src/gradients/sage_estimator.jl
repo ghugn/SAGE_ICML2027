@@ -47,8 +47,25 @@ struct SAGEEstimate
     importance_effective_sample_size::Float64
     use_ball_certificate::Bool
     use_sample_certificate::Bool
+    sample_threads_used::Int
     solve_time::Float64
     records::Vector{SAGESampleRecord}
+end
+
+struct _SAGESampleWorkResult
+    gradient::Vector{Float64}
+    record::Union{Nothing, SAGESampleRecord}
+    reference_solves::Int
+    global_searches::Int
+    competitor_solves::Int
+    sample_certificates::Int
+    restricted_searches::Int
+    lazy_searches::Int
+    lazy_leaf_solves::Int
+    lazy_relaxation_solves::Int
+    switching_samples::Int
+    unresolved_samples::Int
+    thread_id::Int
 end
 
 """Typed public configuration for the SAGE research-alpha estimator."""
@@ -65,6 +82,7 @@ Base.@kwdef struct SAGEConfig
     global_strategy::Symbol = :auto
     restricted_branch_limit::Int = 4
     store_records::Bool = true
+    parallel_samples::Bool = false
 end
 
 is_certified(estimate::SAGEEstimate) = estimate.status == :ok
@@ -109,6 +127,173 @@ function _resolve_smoothing_samples(
     return vectors
 end
 
+function _evaluate_sage_sample(
+    model::DisjunctiveModel,
+    center::Vector{Float64},
+    radius::Float64,
+    u::Vector{Float64},
+    importance_weight::Float64,
+    proposal_ratio::Float64,
+    sampling_component::Symbol,
+    stability::SwitchingCertificate,
+    relevant_groups::Vector{CompetitorGroup},
+    ball_stable::Bool,
+    loss,
+    loss_gradient;
+    solver,
+    feasibility_tol::Float64,
+    active_tol::Float64,
+    certificate_tol::Float64,
+    tie_tol::Float64,
+    max_nodes::Int,
+    max_relevant_branches::Int,
+    global_strategy::Symbol,
+    restricted_branch_limit::Int,
+    store_records::Bool,
+    beta::Float64,
+    use_sample_certificate::Bool,
+)
+    w = center .+ radius .* u
+    reference = project_branch(
+        model,
+        w,
+        stability.winner;
+        solver = solver,
+        feasibility_tol = feasibility_tol,
+    )
+    local_result = fixed_branch_loss_gradient(
+        model,
+        w,
+        stability.winner,
+        loss_gradient;
+        branch_result = reference,
+        solver = solver,
+        feasibility_tol = feasibility_tol,
+        active_tol = active_tol,
+    )
+    if local_result.status != :ok
+        record = store_records ? SAGESampleRecord(
+            copy(u), w, Float64[], Float64[], Int[], NaN, NaN, NaN,
+            Float64[], Float64[], Float64[], false, :local_unresolved,
+            importance_weight, proposal_ratio, sampling_component,
+        ) : nothing
+        return _SAGESampleWorkResult(
+            zeros(model.n_outputs), record, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+            Threads.threadid(),
+        )
+    end
+
+    local_loss = Float64(loss(local_result.y))
+    isfinite(local_loss) || throw(ArgumentError("loss returned a non-finite value."))
+    global_y = local_result.y
+    global_choices = stability.winner
+    global_loss = local_loss
+    residual = 0.0
+    switched = false
+    global_searches = 0
+    competitor_solves = 0
+    sample_certificates = 0
+    restricted_searches = 0
+    lazy_searches = 0
+    lazy_leaf_solves = 0
+    lazy_relaxation_solves = 0
+
+    if !ball_stable && use_sample_certificate && _reference_dominates_competitors(
+        model,
+        w,
+        reference,
+        relevant_groups,
+        max(certificate_tol, tie_tol),
+    )
+        sample_certificates = 1
+    elseif !ball_stable
+        global_searches = 1
+        relevant_count = 1 + sum(
+            group.branch_count for group in relevant_groups; init = 0,
+        )
+        use_restricted = global_strategy == :restricted ||
+            (global_strategy == :auto && relevant_count <= restricted_branch_limit)
+        global_status = :uncertified
+        candidate_y = Float64[]
+        candidate_choices = Int[]
+        if use_restricted
+            relevant = project_relevant_branches(
+                model,
+                w,
+                stability.winner,
+                relevant_groups;
+                reference_result = reference,
+                solver = solver,
+                feasibility_tol = feasibility_tol,
+                tie_tol = tie_tol,
+                max_relevant_branches = max_relevant_branches,
+            )
+            restricted_searches = 1
+            competitor_solves = relevant.solved_branches - 1
+            global_status = relevant.status
+            candidate_y = relevant.y
+            candidate_choices = relevant.choices
+        else
+            global_result = lazy_branch_search(
+                model,
+                w;
+                solver = solver,
+                feasibility_tol = feasibility_tol,
+                tie_tol = tie_tol,
+                max_nodes = max_nodes,
+                seed_incumbent = false,
+                incumbent_result = reference,
+                store_prune_records = false,
+            )
+            lazy_searches = 1
+            additional_leaves = max(global_result.leaf_solves - 1, 0)
+            competitor_solves = additional_leaves
+            lazy_leaf_solves = additional_leaves
+            lazy_relaxation_solves = global_result.relaxation_solves
+            global_status = global_result.status
+            candidate_y = global_result.y
+            candidate_choices = global_result.choices
+        end
+        if global_status != :optimal
+            record = store_records ? SAGESampleRecord(
+                copy(u), w, local_result.y, Float64[], Int[], local_loss, NaN, NaN,
+                local_result.gradient, Float64[], Float64[], false,
+                :global_unresolved, importance_weight, proposal_ratio,
+                sampling_component,
+            ) : nothing
+            return _SAGESampleWorkResult(
+                zeros(model.n_outputs), record, 1, global_searches,
+                competitor_solves, sample_certificates, restricted_searches,
+                lazy_searches, lazy_leaf_solves, lazy_relaxation_solves, 0, 1,
+                Threads.threadid(),
+            )
+        end
+        global_y = candidate_y
+        global_choices = candidate_choices
+        global_loss = Float64(loss(global_y))
+        isfinite(global_loss) ||
+            throw(ArgumentError("loss returned a non-finite value."))
+        residual = global_loss - local_loss
+        switched = global_choices != stability.winner
+    end
+
+    score = ball_smoothing_score(u; beta = beta)
+    correction = (residual / radius) .* score
+    sample_gradient = importance_weight .* (local_result.gradient .+ correction)
+    record = store_records ? SAGESampleRecord(
+        copy(u), w, local_result.y, copy(global_y), copy(global_choices),
+        local_loss, global_loss, residual, copy(local_result.gradient), correction,
+        sample_gradient, switched, :ok,
+        importance_weight, proposal_ratio, sampling_component,
+    ) : nothing
+    return _SAGESampleWorkResult(
+        sample_gradient, record, 1, global_searches, competitor_solves,
+        sample_certificates, restricted_searches, lazy_searches,
+        lazy_leaf_solves, lazy_relaxation_solves, switched ? 1 : 0, 0,
+        Threads.threadid(),
+    )
+end
+
 """
     sage_gradient(model, z, radius, loss, loss_gradient; kwargs...)
 
@@ -150,6 +335,7 @@ function sage_gradient(
     geometry_normal_tol::Real = 1e-9,
     use_ball_certificate::Bool = true,
     use_sample_certificate::Bool = true,
+    parallel_samples::Bool = false,
 )
     length(z) == model.n_outputs ||
         throw(DimensionMismatch("z dimension does not match the model."))
@@ -229,7 +415,7 @@ function sage_gradient(
             stability, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             sampling, :not_built, 0, 0, 0.0,
             use_ball_certificate, use_sample_certificate,
-            (time_ns() - started) / 1e9, SAGESampleRecord[],
+            0, (time_ns() - started) / 1e9, SAGESampleRecord[],
         )
 
     ball_stable = use_ball_certificate && certifies_stability(stability)
@@ -334,135 +520,61 @@ function sage_gradient(
     unresolved_samples = 0
     records = SAGESampleRecord[]
 
-    for (sample_index, u) in enumerate(smoothing_samples)
-        importance_weight = sample_weights[sample_index]
-        proposal_ratio = sample_ratios[sample_index]
-        sampling_component = sample_components[sample_index]
-        w = center .+ Float64(radius) .* u
-        reference = project_branch(
+    sample_results = Vector{_SAGESampleWorkResult}(undef, length(smoothing_samples))
+    function evaluate_sample!(sample_index)
+        sample_results[sample_index] = _evaluate_sage_sample(
             model,
-            w,
-            stability.winner;
-            solver = solver,
-            feasibility_tol = feasibility_tol,
-        )
-        reference_solves += 1
-        local_result = fixed_branch_loss_gradient(
-            model,
-            w,
-            stability.winner,
-            loss_gradient;
-            branch_result = reference,
-            solver = solver,
-            feasibility_tol = feasibility_tol,
-            active_tol = active_tol,
-        )
-        if local_result.status != :ok
-            unresolved_samples += 1
-            store_records && push!(records, SAGESampleRecord(
-                copy(u), w, Float64[], Float64[], Int[], NaN, NaN, NaN,
-                Float64[], Float64[], Float64[], false, :local_unresolved,
-                importance_weight, proposal_ratio, sampling_component,
-            ))
-            continue
-        end
-
-        local_loss = Float64(loss(local_result.y))
-        isfinite(local_loss) || throw(ArgumentError("loss returned a non-finite value."))
-        global_y = local_result.y
-        global_choices = stability.winner
-        global_loss = local_loss
-        residual = 0.0
-        switched = false
-
-        if !ball_stable && use_sample_certificate && _reference_dominates_competitors(
-            model,
-            w,
-            reference,
+            center,
+            Float64(radius),
+            smoothing_samples[sample_index],
+            sample_weights[sample_index],
+            sample_ratios[sample_index],
+            sample_components[sample_index],
+            stability,
             relevant_groups,
-            max(Float64(certificate_tol), Float64(tie_tol)),
+            ball_stable,
+            loss,
+            loss_gradient;
+            solver = solver,
+            feasibility_tol = Float64(feasibility_tol),
+            active_tol = Float64(active_tol),
+            certificate_tol = Float64(certificate_tol),
+            tie_tol = Float64(tie_tol),
+            max_nodes = max_nodes,
+            max_relevant_branches = max_relevant_branches,
+            global_strategy = global_strategy,
+            restricted_branch_limit = restricted_branch_limit,
+            store_records = store_records,
+            beta = Float64(beta),
+            use_sample_certificate = use_sample_certificate,
         )
-            # The fixed reference branch is certified globally optimal at this
-            # sampled point. Eq. (18) has zero residual, so no global solve is
-            # needed even though the whole perturbation ball was inconclusive.
-            sample_certificates += 1
-        elseif !ball_stable
-            global_searches += 1
-            relevant_count = 1 + sum(group.branch_count for group in relevant_groups; init = 0)
-            use_restricted = global_strategy == :restricted ||
-                (global_strategy == :auto && relevant_count <= restricted_branch_limit)
-            global_status = :uncertified
-            candidate_y = Float64[]
-            candidate_choices = Int[]
-            if use_restricted
-                relevant = project_relevant_branches(
-                    model,
-                    w,
-                    stability.winner,
-                    relevant_groups;
-                    reference_result = reference,
-                    solver = solver,
-                    feasibility_tol = feasibility_tol,
-                    tie_tol = tie_tol,
-                    max_relevant_branches = max_relevant_branches,
-                )
-                restricted_searches += 1
-                competitor_solves += relevant.solved_branches - 1
-                global_status = relevant.status
-                candidate_y = relevant.y
-                candidate_choices = relevant.choices
-            else
-                global_result = lazy_branch_search(
-                    model,
-                    w;
-                    solver = solver,
-                    feasibility_tol = feasibility_tol,
-                    tie_tol = tie_tol,
-                    max_nodes = max_nodes,
-                    seed_incumbent = false,
-                    incumbent_result = reference,
-                    store_prune_records = false,
-                )
-                lazy_searches += 1
-                # The externally supplied reference branch is already counted
-                # in reference_solves, so only additional leaves are competitors.
-                additional_leaves = max(global_result.leaf_solves - 1, 0)
-                competitor_solves += additional_leaves
-                lazy_leaf_solves += additional_leaves
-                lazy_relaxation_solves += global_result.relaxation_solves
-                global_status = global_result.status
-                candidate_y = global_result.y
-                candidate_choices = global_result.choices
-            end
-            if global_status != :optimal
-                unresolved_samples += 1
-                store_records && push!(records, SAGESampleRecord(
-                    copy(u), w, local_result.y, Float64[], Int[], local_loss, NaN, NaN,
-                    local_result.gradient, Float64[], Float64[], false, :global_unresolved,
-                    importance_weight, proposal_ratio, sampling_component,
-                ))
-                continue
-            end
-            global_y = candidate_y
-            global_choices = candidate_choices
-            global_loss = Float64(loss(global_y))
-            isfinite(global_loss) ||
-                throw(ArgumentError("loss returned a non-finite value."))
-            residual = global_loss - local_loss
-            switched = global_choices != stability.winner
-            switched && (switching_samples += 1)
+        return nothing
+    end
+    if parallel_samples && Threads.nthreads() > 1 && length(smoothing_samples) > 1
+        Threads.@threads :static for sample_index in eachindex(smoothing_samples)
+            evaluate_sample!(sample_index)
         end
+    else
+        for sample_index in eachindex(smoothing_samples)
+            evaluate_sample!(sample_index)
+        end
+    end
 
-        score = ball_smoothing_score(u; beta = beta)
-        correction = (residual / Float64(radius)) .* score
-        sample_gradient = importance_weight .* (local_result.gradient .+ correction)
-        gradient_sum .+= sample_gradient
-        store_records && push!(records, SAGESampleRecord(
-            copy(u), w, local_result.y, copy(global_y), copy(global_choices),
-            local_loss, global_loss, residual, copy(local_result.gradient), correction,
-            sample_gradient, switched, :ok,
-            importance_weight, proposal_ratio, sampling_component,
-        ))
+    # Reduce in original sample order. This preserves deterministic accounting,
+    # record ordering and floating-point summation relative to the serial path.
+    for result in sample_results
+        gradient_sum .+= result.gradient
+        reference_solves += result.reference_solves
+        global_searches += result.global_searches
+        competitor_solves += result.competitor_solves
+        sample_certificates += result.sample_certificates
+        restricted_searches += result.restricted_searches
+        lazy_searches += result.lazy_searches
+        lazy_leaf_solves += result.lazy_leaf_solves
+        lazy_relaxation_solves += result.lazy_relaxation_solves
+        switching_samples += result.switching_samples
+        unresolved_samples += result.unresolved_samples
+        result.record === nothing || push!(records, result.record)
     end
 
     status = unresolved_samples == 0 ? :ok : :uncertified
@@ -492,6 +604,7 @@ function sage_gradient(
         effective_sample_size,
         use_ball_certificate,
         use_sample_certificate,
+        length(unique(result.thread_id for result in sample_results)),
         (time_ns() - started) / 1e9,
         records,
     )
@@ -523,6 +636,7 @@ function sage_gradient(
         global_strategy = config.global_strategy,
         restricted_branch_limit = config.restricted_branch_limit,
         store_records = config.store_records,
+        parallel_samples = config.parallel_samples,
         kwargs...,
     )
 end

@@ -156,12 +156,13 @@ mutable struct TrainingCounters
     adaptive_medium_calls::Int
     adaptive_maximum_calls::Int
     adaptive_estimation_samples::Int
+    sample_threads_used::Int
 end
 
 TrainingCounters() = TrainingCounters(
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0,
     0, 0, 0, 0.0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0,
 )
 
 _operation(config::JobShopConfig, job, position) =
@@ -579,6 +580,9 @@ function _record_sage_estimate!(counters, estimate)
     counters.unresolved_samples += estimate.unresolved_samples
     counters.effective_sample_size_sum += estimate.importance_effective_sample_size
     counters.effective_sample_size_count += 1
+    counters.sample_threads_used = max(
+        counters.sample_threads_used, estimate.sample_threads_used,
+    )
     return nothing
 end
 
@@ -592,6 +596,7 @@ function _multiscale_sage_estimate(
     rng,
     center;
     boundary_certificate = nothing,
+    parallel_samples::Bool = false,
 )
     certificate = boundary_certificate === nothing ? switching_certificate(
         instance.model,
@@ -622,6 +627,7 @@ function _multiscale_sage_estimate(
             samples = perturbations,
             center_result = center,
             store_records = false,
+            parallel_samples = parallel_samples,
         )
     end
     has_local = local_radius > 0.0
@@ -653,6 +659,7 @@ function _multiscale_sage_estimate(
         sampling = :provided,
         center_result = center,
         store_records = false,
+        parallel_samples = parallel_samples,
     )
 end
 
@@ -667,6 +674,7 @@ function _gradient_for_sample(
     rng,
     ;
     adaptive_policy::AdaptiveSAGEPolicy = AdaptiveSAGEPolicy(),
+    parallel_sage_samples::Bool = false,
 )
     center = lazy_branch_search(
         instance.model, point; store_prune_records = false,
@@ -782,6 +790,7 @@ function _gradient_for_sample(
             rng,
             center;
             boundary_certificate = boundary_certificate,
+            parallel_samples = parallel_sage_samples,
         )
         estimate.status == :ok || error(
             "Job-shop adaptive SAGE gradient unresolved: " *
@@ -800,6 +809,7 @@ function _gradient_for_sample(
                 samples = perturbations,
                 center_result = center,
                 store_records = false,
+                parallel_samples = parallel_sage_samples,
             )
         elseif method == :sage_geometry
             sage_config = SAGEConfig(
@@ -808,6 +818,7 @@ function _gradient_for_sample(
                 beta = 2.0,
                 sampling = :geometry,
                 store_records = false,
+                parallel_samples = parallel_sage_samples,
             )
             sage_gradient(
                 instance.model,
@@ -828,6 +839,7 @@ function _gradient_for_sample(
                 counters,
                 rng,
                 center,
+                parallel_samples = parallel_sage_samples,
             )
         end
         estimate.status == :ok || error(
@@ -860,6 +872,7 @@ function estimate_output_gradient(
     radius::Real = 0.5,
     samples::Int = 4,
     adaptive_policy::AdaptiveSAGEPolicy = AdaptiveSAGEPolicy(),
+    parallel_sage_samples::Bool = false,
 )
     method in (:hard_local, :ste, :blackbox, :sage_multiscale, :sage_adaptive) ||
         throw(ArgumentError("Unsupported diagnostic gradient method $(method)."))
@@ -884,6 +897,7 @@ function estimate_output_gradient(
         method, instance, point, perturbations, Float64(radius),
         problem.config, counters, rng,
         adaptive_policy = adaptive_policy,
+        parallel_sage_samples = parallel_sage_samples,
     )
     all(isfinite, gradient) || error(
         "Diagnostic $(method) gradient contains non-finite values.",
@@ -913,6 +927,7 @@ function estimate_output_gradient(
         adaptive_medium_calls = counters.adaptive_medium_calls,
         adaptive_maximum_calls = counters.adaptive_maximum_calls,
         adaptive_estimation_samples = counters.adaptive_estimation_samples,
+        sample_threads_used = counters.sample_threads_used,
     )
 end
 
@@ -1140,6 +1155,7 @@ function train_method(
     adaptive_policy::AdaptiveSAGEPolicy = AdaptiveSAGEPolicy(),
     checkpoint_steps::AbstractVector{<:Integer} = Int[],
     progress_callback = nothing,
+    parallel_sage_samples::Bool = false,
 )
     method in (
         :hard_local, :ste, :blackbox, :sage_cert, :sage_geometry,
@@ -1194,6 +1210,7 @@ function train_method(
             adaptive_medium_calls = counters.adaptive_medium_calls,
             adaptive_maximum_calls = counters.adaptive_maximum_calls,
             adaptive_estimation_samples = counters.adaptive_estimation_samples,
+            sample_threads_used = counters.sample_threads_used,
         ))
         progress_callback === nothing || progress_callback(last(trajectory))
     end
@@ -1223,6 +1240,7 @@ function train_method(
                 counters,
                 perturbation_rng,
                 adaptive_policy = adaptive_policy,
+                parallel_sage_samples = parallel_sage_samples,
             )
         catch error_value
             error(
@@ -1280,6 +1298,7 @@ function train_method(
         adaptive_medium_calls = counters.adaptive_medium_calls,
         adaptive_maximum_calls = counters.adaptive_maximum_calls,
         adaptive_estimation_samples = counters.adaptive_estimation_samples,
+        sample_threads_used = counters.sample_threads_used,
     )
 end
 

@@ -109,4 +109,7 @@ Logs:
   pre-registers a 1/4/16/64-epoch convergence study with uninterrupted
   checkpoints and keeps the long-horizon crossover answer separate from code
   completion.
+- [`2026-11-15_parallel_sample_backend.md`](2026-11-15_parallel_sample_backend.md)
+  — post-Phase-16 implementation work for deterministic multi-core SAGE sample
+  evaluation; not a change to the estimator mathematics.
 
