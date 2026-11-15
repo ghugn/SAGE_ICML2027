@@ -1,0 +1,33 @@
+---
+description: Mandatory systems-engineering gates before expensive benchmarks
+alwaysApply: true
+---
+
+# Benchmark Execution Policy
+
+Apply this policy before requesting or launching any benchmark expected to run
+longer than 15 minutes.
+
+- Profile a representative 10–50-step run first. Record wall time, CPU/GPU
+  utilization, RAM, solver calls and extrapolated full-run ETA.
+- Verify that configured resources are actually used. Thread-pool creation is
+  not evidence of parallel execution; report observed worker/thread usage.
+- Run matched serial/parallel A/B workloads before claiming speedup. A
+  microbenchmark does not establish end-to-end benchmark speedup.
+- Make the accelerator decision explicit: explain why CPU, GPU or distributed
+  execution fits the actual bottleneck.
+- Separate correctness gates from performance gates. Passing mathematical
+  parity does not imply acceptable runtime.
+- Add resumable checkpoints and test resume before a long run. Limit expected
+  lost work after interruption to at most 15 minutes where practical.
+- Add heartbeat/progress output with completed work, elapsed time, current ETA,
+  resource utilization diagnostics and cache/checkpoint status.
+- Define stop conditions and a time/resource budget before full execution.
+  Never recommend a multi-hour run if the pilot misses its efficiency gate.
+- For multi-seed studies, evaluate sample-, seed- and process-level parallelism
+  and avoid nested oversubscription.
+- Record the pilot command, environment, measurements, rejected designs and
+  final execution decision in the research log before requesting the full run.
+
+Default sequence: correctness smoke → resource profile → matched A/B → resume
+test → one-seed pilot → full registered benchmark.
