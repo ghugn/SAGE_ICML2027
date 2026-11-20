@@ -18,6 +18,20 @@ const PHASE18_CONFIRM_B_SEEDS = collect(13:15)
 const PHASE18_DEVELOPMENT_SEEDS = [1, 2]
 const PHASE18_TUNING_STEPS = 128
 const PHASE18_DEADLINE = Ref(Inf)
+# Exact schema-3 source used by the first Kaggle prepare run. The subsequent
+# source change is orchestration-only (ETA policy/cache migration), so these
+# signed caches remain scientifically compatible. Never add a hash here when
+# estimator, data, training or evaluation semantics change.
+const PHASE18_LEGACY_CACHE_SOURCES = Set([
+    "0e0393697f1e404c3ee7bc7d5a0228406a41c1b08bd1a3b1944b78d41686593d",
+])
+
+function env_flag(name; default = false)
+    value = lowercase(strip(get(ENV, name, default ? "true" : "false")))
+    value in ("1", "true", "yes", "on") && return true
+    value in ("0", "false", "no", "off") && return false
+    error("$(name) must be a boolean flag, got $(repr(value)).")
+end
 
 function profile_specs(label)
     base = EB.default_spec(label)
@@ -64,6 +78,19 @@ function source_fingerprint()
         write(buffer, replace(relpath(path, root), '\\' => '/'), '\0', read(path), '\0')
     end
     return bytes2hex(sha256(take!(buffer)))
+end
+
+cache_source_compatible(source, current = source_fingerprint()) =
+    source == current || source in PHASE18_LEGACY_CACHE_SOURCES
+
+function signature_compatible(saved, expected)
+    hasproperty(saved, :source) && cache_source_compatible(saved.source, expected.source) ||
+        return false
+    return merge(saved, (source = expected.source,)) == expected
+end
+
+function session_deadline(plan)
+    return plan.time_limit_enforced ? time() + plan.max_hours * 3600 : Inf
 end
 
 function save_atomic(path, value)
@@ -238,7 +265,9 @@ function preflight(directory)
     stage_seconds = projected_stage_seconds(rates)
     predicted_seconds = sum(values(stage_seconds))
     max_hours = parse(Float64, get(ENV, "SAGE_PHASE18_MAX_HOURS", "4.0"))
-    eta_gate = maximum(values(stage_seconds)) <= max_hours * 3600
+    eta_within_limit = maximum(values(stage_seconds)) <= max_hours * 3600
+    time_limit_enforced = env_flag("SAGE_PHASE18_ENFORCE_TIME_LIMIT"; default = false)
+    eta_gate = !time_limit_enforced || eta_within_limit
     thread_gate = all(observed[string(label)] >= 2
         for label in (:sage_n4, :dpo_gaussian, :compact_blackbox))
     ending_resources = resource_snapshot()
@@ -255,7 +284,8 @@ function preflight(directory)
         predicted_stage_hours = (prepare = stage_seconds.prepare / 3600,
             confirm_a = stage_seconds.confirm_a / 3600,
             confirm_b = stage_seconds.confirm_b / 3600, merge = 0.0),
-        max_hours = max_hours, eta_gate = eta_gate, thread_gate = thread_gate,
+        max_hours = max_hours, time_limit_enforced = time_limit_enforced,
+        eta_within_limit = eta_within_limit, eta_gate = eta_gate, thread_gate = thread_gate,
         approximate_cpu_percent = cpu_utilization, resources = ending_resources,
         passed = parity && thread_gate && eta_gate)
     save_atomic(joinpath(directory, "phase18_preflight_plan.jls"), plan)
@@ -263,6 +293,7 @@ function preflight(directory)
     println("SAGE end-to-end serial/threaded speedup: $(speedup)")
     println("Predicted complete study hours (2x margin): $(plan.predicted_hours)")
     println("Predicted staged hours: $(plan.predicted_stage_hours)")
+    println("ETA policy: ", time_limit_enforced ? "hard limit (opt-in)" : "advisory only")
     println("CPU decision: independent CPU-bound QP searches; GPU path absent.")
     println("PHASE18_PREFLIGHT=", plan.passed ? "PASS" : "FAIL")
     plan.passed || error("Preflight failed: inspect parity, actual threads and ETA before a long run.")
@@ -291,15 +322,18 @@ function execute_method(directory, problem, pretrained, spec, seed;
     cache_path = joinpath(directory, "completed_methods", stem * ".jls")
     if isfile(cache_path)
         cached = open(deserialize, cache_path)
-        cached.signature == signature || error("Completed cache signature mismatch: $(stem)")
+        signature_compatible(cached.signature, signature) ||
+            error("Completed cache signature mismatch: $(stem)")
         model = open(deserialize, model_path)
-        model.signature == signature || error("Model signature mismatch: $(stem)")
+        signature_compatible(model.signature, signature) ||
+            error("Model signature mismatch: $(stem)")
         println("[phase18-resume] completed $(stem)"); flush(stdout)
         return cached.row
     end
     resume_state = if isfile(state_path)
         payload = open(deserialize, state_path)
-        payload.signature == signature || error("Resume signature mismatch: $(stem)")
+        signature_compatible(payload.signature, signature) ||
+            error("Resume signature mismatch: $(stem)")
         println("[phase18-resume] $(stem) step=$(payload.state.completed_steps)")
         payload.state
     else
@@ -391,11 +425,13 @@ end
 
 function tune(directory)
     plan = checked_plan(directory)
-    isfinite(PHASE18_DEADLINE[]) || (PHASE18_DEADLINE[] = time() + plan.max_hours * 3600)
+    plan.time_limit_enforced && !isfinite(PHASE18_DEADLINE[]) &&
+        (PHASE18_DEADLINE[] = session_deadline(plan))
     selection_path = joinpath(directory, "phase18_selection.jls")
     if isfile(selection_path)
         frozen = open(deserialize, selection_path)
-        frozen.source == plan.source || error("Frozen selection source mismatch.")
+        cache_source_compatible(frozen.source, plan.source) ||
+            error("Frozen selection source mismatch.")
         println("[phase18-resume] frozen validation selection loaded")
         return frozen.selected
     end
@@ -517,13 +553,15 @@ function pilot(directory, selected)
     record = (schema = PHASE18_SCHEMA, source = plan.source, selected = selected,
         predicted_confirmatory_hours = total_hours,
         predicted_shard_hours = shard_hours, maximum_hours = plan.max_hours,
-        passed = maximum(values(shard_hours)) <= plan.max_hours, rows = rows)
+        eta_within_limit = maximum(values(shard_hours)) <= plan.max_hours,
+        passed = !plan.time_limit_enforced || maximum(values(shard_hours)) <= plan.max_hours,
+        rows = rows)
     save_atomic(joinpath(directory, "phase18_pilot_plan.jls"), record)
     write_json(joinpath(directory, "phase18_pilot_plan.json"), record)
     println("Selected-settings complete confirmatory ETA (2x margin): $(total_hours) hours")
     println("Selected-settings staged ETA: $(shard_hours)")
     println("PHASE18_EXTERNAL_PILOT=COMPLETE")
-    record.passed || error("Selected-settings pilot exceeds the time ceiling; held-out execution is locked.")
+    record.passed || error("Selected-settings pilot exceeds the opt-in hard time ceiling.")
     return record
 end
 
@@ -535,9 +573,10 @@ function checked_selection_and_pilot(directory)
     isfile(pilot_path) || error("Run the Phase 18 prepare stage first (pilot missing).")
     selection = open(deserialize, selection_path)
     pilot_record = open(deserialize, pilot_path)
-    selection.schema == PHASE18_SCHEMA && selection.source == plan.source ||
+    selection.schema == PHASE18_SCHEMA && cache_source_compatible(selection.source, plan.source) ||
         error("Frozen selection source/schema mismatch.")
-    pilot_record.source == plan.source && pilot_record.schema == PHASE18_SCHEMA ||
+    cache_source_compatible(pilot_record.source, plan.source) &&
+        pilot_record.schema == PHASE18_SCHEMA ||
         error("Pilot plan source/schema mismatch.")
     pilot_record.passed || error("Selected-settings staged ETA did not pass.")
     return plan, selection.selected, pilot_record
@@ -554,7 +593,7 @@ function collect_confirmatory_rows(directory)
         payload = open(deserialize, path)
         hasproperty(payload, :signature) && hasproperty(payload, :row) || continue
         signature, row = payload.signature, payload.row
-        signature.schema == PHASE18_SCHEMA && signature.source == source || continue
+        signature.schema == PHASE18_SCHEMA && cache_source_compatible(signature.source, source) || continue
         row.seed in PHASE18_CONFIRMATORY_SEEDS || continue
         valid = (row.tag == "fixed" && row.method in string.(PHASE18_LABELS)) ||
             (row.tag == "matched_time" && row.method in ("ste", "dbb_projection", "dpo_gaussian"))
@@ -572,7 +611,7 @@ end
 
 function prepare(directory)
     plan = checked_plan(directory)
-    PHASE18_DEADLINE[] = time() + plan.max_hours * 3600
+    PHASE18_DEADLINE[] = session_deadline(plan)
     selected = tune(directory)
     pilot(directory, selected)
     println("PHASE18_EXTERNAL_PREPARE=COMPLETE")
@@ -584,8 +623,9 @@ function confirmatory_shard(directory, seeds, token)
     plan, selected, pilot_record = checked_selection_and_pilot(directory)
     all(seed -> seed in PHASE18_CONFIRMATORY_SEEDS, seeds) || error("Unregistered Phase 18 shard seed.")
     shard_eta = remaining_hours(pilot_record.rows; seeds = seeds)
-    shard_eta <= plan.max_hours || error("This confirmatory shard exceeds the session ceiling.")
-    PHASE18_DEADLINE[] = time() + plan.max_hours * 3600
+    (!plan.time_limit_enforced || shard_eta <= plan.max_hours) ||
+        error("This confirmatory shard exceeds the opt-in hard session ceiling.")
+    PHASE18_DEADLINE[] = session_deadline(plan)
     function check_session_budget()
         time() < PHASE18_DEADLINE[] || error(
             "Session time budget reached; completed methods and training states are saved. Resume unchanged.")

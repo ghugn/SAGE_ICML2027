@@ -10,6 +10,19 @@ using Test
         "{\"finite\":1.0,\"missing\":null,\"text\":\"a\\\"b\\nc\"}"
     @test length(runner.source_fingerprint()) == 64
     @test runner.source_fingerprint() == runner.source_fingerprint()
+    legacy_source = first(runner.PHASE18_LEGACY_CACHE_SOURCES)
+    @test runner.cache_source_compatible(legacy_source)
+    @test !runner.cache_source_compatible("unknown-source")
+    @test withenv("SAGE_PHASE18_BOOLEAN_TEST" => "true") do
+        runner.env_flag("SAGE_PHASE18_BOOLEAN_TEST")
+    end
+    @test !withenv("SAGE_PHASE18_BOOLEAN_TEST" => "off") do
+        runner.env_flag("SAGE_PHASE18_BOOLEAN_TEST"; default = true)
+    end
+    @test_throws ErrorException withenv("SAGE_PHASE18_BOOLEAN_TEST" => "maybe") do
+        runner.env_flag("SAGE_PHASE18_BOOLEAN_TEST")
+    end
+    @test isinf(runner.session_deadline((time_limit_enforced = false, max_hours = 1.0)))
     @test_throws ErrorException runner.interval([1.0, 2.0])
     @test runner.interval(fill(-1.0, 5)).upper == -1.0
     kaggle_rates = Dict("hard_local" => 0.083, "ste" => 0.0723,
@@ -68,7 +81,7 @@ using Test
 
     mktempdir() do directory
         spec = runner.EB.default_spec(:sage_n4)
-        signature = (schema = runner.PHASE18_SCHEMA, source = runner.source_fingerprint(),
+        signature = (schema = runner.PHASE18_SCHEMA, source = legacy_source,
             seed = 11, spec = spec, steps = 1024, tag = "fixed", wall_seconds = Inf)
         row = (seed = 11, method = "sage_n4", tag = "fixed")
         cache = joinpath(directory, "completed_methods", "seed_11_sage_n4_fixed.jls")
@@ -78,6 +91,13 @@ using Test
             (signature = signature, row = row))
         @test_throws ErrorException runner.collect_confirmatory_rows(directory)
     end
+
+    expected_signature = (schema = runner.PHASE18_SCHEMA,
+        source = runner.source_fingerprint(), seed = 1, tag = "pilot")
+    legacy_signature = merge(expected_signature, (source = legacy_source,))
+    @test runner.signature_compatible(legacy_signature, expected_signature)
+    @test !runner.signature_compatible(
+        merge(legacy_signature, (seed = 2,)), expected_signature)
 
     # Exercise the complete selection matrix without touching held-out data.
     # Adversarial OOD values are rejected, not used as a hidden tie-breaker.
