@@ -12,6 +12,13 @@ using Test
     @test runner.source_fingerprint() == runner.source_fingerprint()
     @test_throws ErrorException runner.interval([1.0, 2.0])
     @test runner.interval(fill(-1.0, 5)).upper == -1.0
+    kaggle_rates = Dict("hard_local" => 0.083, "ste" => 0.0723,
+        "compact_blackbox" => 0.1947, "dbb_projection" => 0.1615,
+        "dpo_gaussian" => 0.1859, "sage_n4" => 0.2529)
+    staged = runner.projected_stage_seconds(kaggle_rates)
+    @test sum(values(staged)) / 3600 > 4.0
+    @test maximum(values(staged)) / 3600 < 4.0
+    @test staged.confirm_b > staged.confirm_a
 
     mktempdir() do directory
         problem, pretrained = runner.EB.setup_problem(1; small = true)
@@ -59,6 +66,19 @@ using Test
         @test isempty(partial.comparisons)
     end
 
+    mktempdir() do directory
+        spec = runner.EB.default_spec(:sage_n4)
+        signature = (schema = runner.PHASE18_SCHEMA, source = runner.source_fingerprint(),
+            seed = 11, spec = spec, steps = 1024, tag = "fixed", wall_seconds = Inf)
+        row = (seed = 11, method = "sage_n4", tag = "fixed")
+        cache = joinpath(directory, "completed_methods", "seed_11_sage_n4_fixed.jls")
+        runner.save_atomic(cache, (signature = signature, row = row))
+        @test runner.collect_confirmatory_rows(directory) == [row]
+        runner.save_atomic(joinpath(directory, "completed_methods", "duplicate.jls"),
+            (signature = signature, row = row))
+        @test_throws ErrorException runner.collect_confirmatory_rows(directory)
+    end
+
     # Exercise the complete selection matrix without touching held-out data.
     # Adversarial OOD values are rejected, not used as a hidden tie-breaker.
     validation = NamedTuple[]
@@ -88,6 +108,13 @@ using Test
     pilot_rows = [(method = string(label), steps = 256, tag = "pilot", csat = 1.0,
         iid_loss = 0.1, ood_loss = NaN, seconds = 25.6) for label in runner.PHASE18_LABELS]
     @test runner.remaining_hours(pilot_rows) ≈ 2.0 * 5 * 1024 * 0.9 / 3600
+    @test runner.remaining_hours(pilot_rows; seeds = 11:12) ≈
+        2.0 * 2 * 1024 * 0.9 / 3600
+    @test runner.remaining_hours(pilot_rows; seeds = 13:15) ≈
+        2.0 * 3 * 1024 * 0.9 / 3600
+    @test_throws ErrorException runner.remaining_hours(pilot_rows; seeds = Int[])
+    @test_throws ErrorException runner.remaining_hours(pilot_rows; seeds = [11, 11])
+    @test_throws ErrorException runner.remaining_hours(pilot_rows; seeds = [99])
     @test_throws ErrorException runner.remaining_hours(pilot_rows[2:end])
     @test_throws ErrorException runner.remaining_hours(vcat(pilot_rows, pilot_rows[1:1]))
     contaminated_pilot = copy(pilot_rows)

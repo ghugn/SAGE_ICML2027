@@ -9,10 +9,12 @@ include(joinpath(@__DIR__, "phase18_external_common.jl"))
 using .Phase10JobShop
 import .Phase18External as EB
 
-const PHASE18_SCHEMA = 2
+const PHASE18_SCHEMA = 3
 const PHASE18_LABELS = (:hard_local, :ste, :compact_blackbox, :dbb_projection,
     :dpo_gaussian, :sage_n4)
 const PHASE18_CONFIRMATORY_SEEDS = collect(11:15)
+const PHASE18_CONFIRM_A_SEEDS = collect(11:12)
+const PHASE18_CONFIRM_B_SEEDS = collect(13:15)
 const PHASE18_DEVELOPMENT_SEEDS = [1, 2]
 const PHASE18_TUNING_STEPS = 128
 const PHASE18_DEADLINE = Ref(Inf)
@@ -26,6 +28,19 @@ function profile_specs(label)
         label == :dpo_gaussian ? merge(base, (gaussian_scale = 2.0,)) :
         label in (:sage_n4, :compact_blackbox) ? merge(base, (radius = 1.0,)) : base
     return unique([base, scale_extreme, first(candidates), last(candidates)])
+end
+
+function projected_stage_seconds(rates)
+    tuning = length(PHASE18_DEVELOPMENT_SEEDS) * PHASE18_TUNING_STEPS *
+        sum(length(EB.candidate_specs(label)) * rates[string(label)] for label in PHASE18_LABELS)
+    confirmatory = length(PHASE18_CONFIRMATORY_SEEDS) * 1024 *
+        (sum(values(rates)) + 3rates["sage_n4"])
+    pilot = 256 * sum(values(rates))
+    return (prepare = 2.0 * (tuning + pilot),
+        confirm_a = 2.0 * confirmatory * length(PHASE18_CONFIRM_A_SEEDS) /
+            length(PHASE18_CONFIRMATORY_SEEDS),
+        confirm_b = 2.0 * confirmatory * length(PHASE18_CONFIRM_B_SEEDS) /
+            length(PHASE18_CONFIRMATORY_SEEDS), merge = 0.0)
 end
 
 function repository_revision()
@@ -220,13 +235,10 @@ function preflight(directory)
     end
     # Conservative 2x allowance: past Phase 17's linear ETA underestimated the
     # complete run. Include equal development tuning and three real-time replays.
-    tuning_seconds = length(PHASE18_DEVELOPMENT_SEEDS) * PHASE18_TUNING_STEPS *
-        sum(length(EB.candidate_specs(label)) * rates[string(label)] for label in PHASE18_LABELS)
-    confirmatory_seconds = 5 * 1024 * (sum(values(rates)) + 3rates["sage_n4"])
-    pilot_seconds = 256 * sum(values(rates))
-    predicted_seconds = 2.0 * (tuning_seconds + pilot_seconds + confirmatory_seconds)
+    stage_seconds = projected_stage_seconds(rates)
+    predicted_seconds = sum(values(stage_seconds))
     max_hours = parse(Float64, get(ENV, "SAGE_PHASE18_MAX_HOURS", "4.0"))
-    eta_gate = predicted_seconds <= max_hours * 3600
+    eta_gate = maximum(values(stage_seconds)) <= max_hours * 3600
     thread_gate = all(observed[string(label)] >= 2
         for label in (:sage_n4, :dpo_gaussian, :compact_blackbox))
     ending_resources = resource_snapshot()
@@ -240,13 +252,17 @@ function preflight(directory)
         tuning_candidates_per_method = 9,
         serial_parallel_resume_parity = parity,
         sage_speedup = speedup, predicted_hours = predicted_seconds / 3600,
+        predicted_stage_hours = (prepare = stage_seconds.prepare / 3600,
+            confirm_a = stage_seconds.confirm_a / 3600,
+            confirm_b = stage_seconds.confirm_b / 3600, merge = 0.0),
         max_hours = max_hours, eta_gate = eta_gate, thread_gate = thread_gate,
         approximate_cpu_percent = cpu_utilization, resources = ending_resources,
         passed = parity && thread_gate && eta_gate)
     save_atomic(joinpath(directory, "phase18_preflight_plan.jls"), plan)
     write_json(joinpath(directory, "phase18_preflight_plan.json"), plan)
     println("SAGE end-to-end serial/threaded speedup: $(speedup)")
-    println("Predicted tuning + confirmatory hours (2x margin): $(plan.predicted_hours)")
+    println("Predicted complete study hours (2x margin): $(plan.predicted_hours)")
+    println("Predicted staged hours: $(plan.predicted_stage_hours)")
     println("CPU decision: independent CPU-bound QP searches; GPU path absent.")
     println("PHASE18_PREFLIGHT=", plan.passed ? "PASS" : "FAIL")
     plan.passed || error("Preflight failed: inspect parity, actual threads and ETA before a long run.")
@@ -256,6 +272,7 @@ function checked_plan(directory)
     path = joinpath(directory, "phase18_preflight_plan.jls")
     isfile(path) || error("Run Phase 18 preflight first.")
     plan = open(deserialize, path)
+    plan.schema == PHASE18_SCHEMA || error("Preflight schema changed; rerun preflight.")
     plan.source == source_fingerprint() || error("Source changed since preflight; rerun preflight.")
     plan.julia == string(VERSION) && plan.threads == Threads.nthreads() ||
         error("Julia version/thread configuration changed since preflight.")
@@ -394,7 +411,8 @@ function tune(directory)
         end
     end
     selected, scores = select_candidates(rows)
-    save_atomic(selection_path, (source = plan.source, selected = selected))
+    save_atomic(selection_path, (schema = PHASE18_SCHEMA,
+        source = plan.source, selected = selected))
     write_json(joinpath(directory, "phase18_selection.json"),
         (schema = PHASE18_SCHEMA, development_seeds = PHASE18_DEVELOPMENT_SEEDS,
             validation_steps = PHASE18_TUNING_STEPS,
@@ -466,7 +484,7 @@ function report(directory, rows)
     return summary
 end
 
-function remaining_hours(rows)
+function remaining_hours(rows; seeds = PHASE18_CONFIRMATORY_SEEDS)
     labels = sort(unique(row.method for row in rows))
     labels == sort(string.(collect(PHASE18_LABELS))) ||
         error("Selected-settings pilot must cover all six methods exactly once.")
@@ -475,7 +493,12 @@ function remaining_hours(rows)
         isfinite(row.iid_loss) && isnan(row.ood_loss) && row.seconds > 0, rows) ||
         error("Invalid validation-only selected-settings pilot.")
     rates = Dict(row.method => row.seconds / row.steps for row in rows)
-    return 2.0 * 5 * 1024 * (sum(values(rates)) + 3rates["sage_n4"]) / 3600
+    isempty(seeds) && error("At least one confirmatory seed is required.")
+    all(seed -> seed in PHASE18_CONFIRMATORY_SEEDS, seeds) ||
+        error("Unknown Phase 18 confirmatory seed.")
+    length(unique(seeds)) == length(seeds) || error("Duplicate confirmatory seed.")
+    return 2.0 * length(seeds) * 1024 *
+        (sum(values(rates)) + 3rates["sage_n4"]) / 3600
 end
 
 function pilot(directory, selected)
@@ -488,33 +511,86 @@ function pilot(directory, selected)
             steps = 256, tag = "pilot"))
     end
     write_csv(joinpath(directory, "phase18_pilot.csv"), rows)
-    hours = remaining_hours(rows)
+    total_hours = remaining_hours(rows)
+    shard_hours = (confirm_a = remaining_hours(rows; seeds = PHASE18_CONFIRM_A_SEEDS),
+        confirm_b = remaining_hours(rows; seeds = PHASE18_CONFIRM_B_SEEDS))
     record = (schema = PHASE18_SCHEMA, source = plan.source, selected = selected,
-        predicted_confirmatory_hours = hours, maximum_hours = plan.max_hours,
-        passed = hours <= plan.max_hours, rows = rows)
+        predicted_confirmatory_hours = total_hours,
+        predicted_shard_hours = shard_hours, maximum_hours = plan.max_hours,
+        passed = maximum(values(shard_hours)) <= plan.max_hours, rows = rows)
     save_atomic(joinpath(directory, "phase18_pilot_plan.jls"), record)
     write_json(joinpath(directory, "phase18_pilot_plan.json"), record)
-    println("Selected-settings pilot confirmatory ETA (2x margin): $(hours) hours")
+    println("Selected-settings complete confirmatory ETA (2x margin): $(total_hours) hours")
+    println("Selected-settings staged ETA: $(shard_hours)")
     println("PHASE18_EXTERNAL_PILOT=COMPLETE")
     record.passed || error("Selected-settings pilot exceeds the time ceiling; held-out execution is locked.")
     return record
 end
 
-function confirmatory(directory)
-    lowercase(get(ENV, "SAGE_PHASE18_ALLOW_CONFIRMATORY", "0")) in ("1", "true") ||
-        error("Set SAGE_PHASE18_ALLOW_CONFIRMATORY=1 after reviewing preflight and validation plan.")
+function checked_selection_and_pilot(directory)
+    plan = checked_plan(directory)
+    selection_path = joinpath(directory, "phase18_selection.jls")
+    pilot_path = joinpath(directory, "phase18_pilot_plan.jls")
+    isfile(selection_path) || error("Run the Phase 18 prepare stage first (selection missing).")
+    isfile(pilot_path) || error("Run the Phase 18 prepare stage first (pilot missing).")
+    selection = open(deserialize, selection_path)
+    pilot_record = open(deserialize, pilot_path)
+    selection.schema == PHASE18_SCHEMA && selection.source == plan.source ||
+        error("Frozen selection source/schema mismatch.")
+    pilot_record.source == plan.source && pilot_record.schema == PHASE18_SCHEMA ||
+        error("Pilot plan source/schema mismatch.")
+    pilot_record.passed || error("Selected-settings staged ETA did not pass.")
+    return plan, selection.selected, pilot_record
+end
+
+function collect_confirmatory_rows(directory)
+    cache_directory = joinpath(directory, "completed_methods")
+    isdir(cache_directory) || return NamedTuple[]
+    source = source_fingerprint()
+    rows = NamedTuple[]
+    seen = Set{Tuple{Int, String, String}}()
+    for path in sort(readdir(cache_directory; join = true))
+        endswith(path, ".jls") || continue
+        payload = open(deserialize, path)
+        hasproperty(payload, :signature) && hasproperty(payload, :row) || continue
+        signature, row = payload.signature, payload.row
+        signature.schema == PHASE18_SCHEMA && signature.source == source || continue
+        row.seed in PHASE18_CONFIRMATORY_SEEDS || continue
+        valid = (row.tag == "fixed" && row.method in string.(PHASE18_LABELS)) ||
+            (row.tag == "matched_time" && row.method in ("ste", "dbb_projection", "dpo_gaussian"))
+        valid || continue
+        signature.seed == row.seed && string(signature.spec.label) == row.method &&
+            signature.tag == row.tag || error("Cache signature/row mismatch: $(path)")
+        key = (row.seed, row.method, row.tag)
+        key in seen && error("Duplicate confirmatory cache row: $(key)")
+        push!(seen, key)
+        push!(rows, row)
+    end
+    sort!(rows; by = row -> (row.seed, row.tag, row.method))
+    return rows
+end
+
+function prepare(directory)
     plan = checked_plan(directory)
     PHASE18_DEADLINE[] = time() + plan.max_hours * 3600
     selected = tune(directory)
-    # Selected configurations can have different long-horizon solver costs
-    # than 16-update default probes. Never open held-out pools before this gate.
     pilot(directory, selected)
-    rows = NamedTuple[]
+    println("PHASE18_EXTERNAL_PREPARE=COMPLETE")
+end
+
+function confirmatory_shard(directory, seeds, token)
+    lowercase(get(ENV, "SAGE_PHASE18_ALLOW_CONFIRMATORY", "0")) in ("1", "true") ||
+        error("Set SAGE_PHASE18_ALLOW_CONFIRMATORY=1 after reviewing preflight and validation plan.")
+    plan, selected, pilot_record = checked_selection_and_pilot(directory)
+    all(seed -> seed in PHASE18_CONFIRMATORY_SEEDS, seeds) || error("Unregistered Phase 18 shard seed.")
+    shard_eta = remaining_hours(pilot_record.rows; seeds = seeds)
+    shard_eta <= plan.max_hours || error("This confirmatory shard exceeds the session ceiling.")
+    PHASE18_DEADLINE[] = time() + plan.max_hours * 3600
     function check_session_budget()
         time() < PHASE18_DEADLINE[] || error(
             "Session time budget reached; completed methods and training states are saved. Resume unchanged.")
     end
-    for seed in PHASE18_CONFIRMATORY_SEEDS
+    for seed in seeds
         check_session_budget()
         problem, pretrained = EB.setup_problem(seed; pool = :heldout)
         # Warm every method outside all reported training budgets.
@@ -523,19 +599,31 @@ function confirmatory(directory)
         end
         for label in circshift(collect(PHASE18_LABELS), -mod(seed, length(PHASE18_LABELS)))
             check_session_budget()
-            push!(rows, execute_method(directory, problem, pretrained, selected[label], seed;
-                steps = 1024, tag = "fixed"))
-            report(directory, rows)
+            execute_method(directory, problem, pretrained, selected[label], seed;
+                steps = 1024, tag = "fixed")
+            report(directory, collect_confirmatory_rows(directory))
         end
-        sage = only(filter(row -> row.seed == seed && row.method == "sage_n4", rows))
+        current_rows = collect_confirmatory_rows(directory)
+        sage = only(filter(row -> row.seed == seed && row.method == "sage_n4" &&
+            row.tag == "fixed", current_rows))
         for label in circshift([:ste, :dbb_projection, :dpo_gaussian], -mod(seed, 3))
             check_session_budget()
-            push!(rows, execute_method(directory, problem, pretrained, selected[label], seed;
-                steps = 16384, tag = "matched_time", wall_seconds = sage.seconds))
-            report(directory, rows)
+            execute_method(directory, problem, pretrained, selected[label], seed;
+                steps = 16384, tag = "matched_time", wall_seconds = sage.seconds)
+            report(directory, collect_confirmatory_rows(directory))
         end
     end
+    summary = report(directory, collect_confirmatory_rows(directory))
+    println(token)
+    return summary
+end
+
+function merge_confirmatory(directory)
+    checked_selection_and_pilot(directory)
+    rows = collect_confirmatory_rows(directory)
     summary = report(directory, rows)
+    summary.status == "COMPLETE" || error(
+        "Phase 18 merge requires all 45 signed rows; found $(length(rows)). Run both shards first.")
     println("method/budget\tmean OOD loss\tmean seconds\tperturbed searches")
     for (name, aggregate) in sort(collect(summary.aggregates); by = first)
         println("$(name)\t$(aggregate.mean_ood_loss)\t$(aggregate.mean_seconds)\t" *
@@ -543,6 +631,7 @@ function confirmatory(directory)
     end
     println(json(summary))
     println("PHASE18_EXTERNAL_CONFIRMATORY=COMPLETE")
+    return summary
 end
 
 function main()
@@ -555,12 +644,19 @@ function main()
     profile == :smoke && return smoke(directory)
     profile == :preflight && return preflight(directory)
     profile == :tune && return tune(directory)
+    profile == :prepare && return prepare(directory)
     if profile == :pilot
         selected = tune(directory)
         return pilot(directory, selected)
     end
-    profile == :confirmatory && return confirmatory(directory)
-    error("SAGE_PHASE18_PROFILE must be smoke, preflight, tune, pilot, or confirmatory.")
+    profile == :confirm_a && return confirmatory_shard(directory,
+        PHASE18_CONFIRM_A_SEEDS, "PHASE18_EXTERNAL_CONFIRM_A=COMPLETE")
+    profile == :confirm_b && return confirmatory_shard(directory,
+        PHASE18_CONFIRM_B_SEEDS, "PHASE18_EXTERNAL_CONFIRM_B=COMPLETE")
+    profile == :merge && return merge_confirmatory(directory)
+    profile == :confirmatory && error(
+        "The one-session confirmatory profile is disabled. Run prepare, confirm_a, confirm_b, then merge.")
+    error("SAGE_PHASE18_PROFILE must be smoke, preflight, tune, pilot, prepare, confirm_a, confirm_b, or merge.")
 end
 
 if abspath(PROGRAM_FILE) == abspath(@__FILE__)
