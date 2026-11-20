@@ -28,6 +28,8 @@ const PHASE18_LEGACY_CACHE_SOURCES = Set([
     # training, and evaluation semantics are unchanged. This admits the
     # already completed fixed-step Kaggle caches from 2026-11-21.
     "7f66c687fa82ab98270e9d44e29d78a822b997540f31be980657ccd42a946a63",
+    # Fixed-step quality runner before adding process-level seed sharding.
+    "193f4c0cc3ca9927b98058f39909eddc7cb9ada38abe02cc1c2f4a6ea4ede4da",
 ])
 
 function env_flag(name; default = false)
@@ -302,14 +304,20 @@ function preflight(directory)
     plan.passed || error("Preflight failed: inspect parity, actual threads and ETA before a long run.")
 end
 
-function checked_plan(directory)
+function checked_plan(directory; allow_thread_change = false)
     path = joinpath(directory, "phase18_preflight_plan.jls")
     isfile(path) || error("Run Phase 18 preflight first.")
     plan = open(deserialize, path)
     plan.schema == PHASE18_SCHEMA || error("Preflight schema changed; rerun preflight.")
-    plan.source == source_fingerprint() || error("Source changed since preflight; rerun preflight.")
-    plan.julia == string(VERSION) && plan.threads == Threads.nthreads() ||
-        error("Julia version/thread configuration changed since preflight.")
+    cache_source_compatible(plan.source) || error("Source changed since preflight; rerun preflight.")
+    plan.julia == string(VERSION) || error("Julia version changed since preflight.")
+    if allow_thread_change
+        plan.serial_parallel_resume_parity || error(
+            "Preflight did not certify serial/threaded parity.")
+    else
+        plan.threads == Threads.nthreads() || error(
+            "Thread configuration changed since preflight.")
+    end
     plan.passed || error("Preflight did not pass.")
     return plan
 end
@@ -561,8 +569,8 @@ function pilot(directory, selected)
     return record
 end
 
-function checked_selection_and_pilot(directory)
-    plan = checked_plan(directory)
+function checked_selection_and_pilot(directory; allow_thread_change = false)
+    plan = checked_plan(directory; allow_thread_change = allow_thread_change)
     selection_path = joinpath(directory, "phase18_selection.jls")
     pilot_path = joinpath(directory, "phase18_pilot_plan.jls")
     isfile(selection_path) || error("Run the Phase 18 prepare stage first (selection missing).")
@@ -612,10 +620,12 @@ function prepare(directory)
     println("PHASE18_EXTERNAL_PREPARE=COMPLETE")
 end
 
-function confirmatory_shard(directory, seeds, token)
+function confirmatory_shard(directory, seeds, token; deferred_report = false,
+        allow_thread_change = false)
     lowercase(get(ENV, "SAGE_PHASE18_ALLOW_CONFIRMATORY", "0")) in ("1", "true") ||
         error("Set SAGE_PHASE18_ALLOW_CONFIRMATORY=1 after reviewing preflight and validation plan.")
-    plan, selected, pilot_record = checked_selection_and_pilot(directory)
+    plan, selected, pilot_record = checked_selection_and_pilot(directory;
+        allow_thread_change = allow_thread_change)
     all(seed -> seed in PHASE18_CONFIRMATORY_SEEDS, seeds) || error("Unregistered Phase 18 shard seed.")
     shard_eta = remaining_hours(pilot_record.rows; seeds = seeds)
     (!plan.time_limit_enforced || shard_eta <= plan.max_hours) ||
@@ -636,10 +646,12 @@ function confirmatory_shard(directory, seeds, token)
             check_session_budget()
             execute_method(directory, problem, pretrained, selected[label], seed;
                 steps = 1024, tag = "fixed")
-            report(directory, collect_confirmatory_rows(directory))
+            deferred_report || report(directory, collect_confirmatory_rows(directory))
         end
     end
-    summary = report(directory, collect_confirmatory_rows(directory))
+    summary = deferred_report ?
+        (status = "DEFERRED", fixed_rows = length(collect_confirmatory_rows(directory))) :
+        report(directory, collect_confirmatory_rows(directory))
     println(token)
     return summary
 end
@@ -679,10 +691,18 @@ function main()
         PHASE18_CONFIRM_A_SEEDS, "PHASE18_EXTERNAL_CONFIRM_A=COMPLETE")
     profile == :confirm_b && return confirmatory_shard(directory,
         PHASE18_CONFIRM_B_SEEDS, "PHASE18_EXTERNAL_CONFIRM_B=COMPLETE")
+    if profile == :confirm_seed
+        seed = parse(Int, get(ENV, "SAGE_PHASE18_SEED", "0"))
+        seed in PHASE18_CONFIRMATORY_SEEDS || error(
+            "SAGE_PHASE18_SEED must be one registered seed in 11:15.")
+        return confirmatory_shard(directory, [seed],
+            "PHASE18_EXTERNAL_CONFIRM_SEED=COMPLETE";
+            deferred_report = true, allow_thread_change = true)
+    end
     profile == :merge && return merge_confirmatory(directory)
     profile == :confirmatory && error(
         "The one-session confirmatory profile is disabled. Run prepare, confirm_a, confirm_b, then merge.")
-    error("SAGE_PHASE18_PROFILE must be smoke, preflight, tune, pilot, prepare, confirm_a, confirm_b, or merge.")
+    error("SAGE_PHASE18_PROFILE must be smoke, preflight, tune, pilot, prepare, confirm_a, confirm_b, confirm_seed, or merge.")
 end
 
 if abspath(PROGRAM_FILE) == abspath(@__FILE__)

@@ -23,6 +23,14 @@ using Test
         runner.env_flag("SAGE_PHASE18_BOOLEAN_TEST")
     end
     @test isinf(runner.session_deadline((time_limit_enforced = false, max_hours = 1.0)))
+    mktempdir() do directory
+        certified_plan = (schema = runner.PHASE18_SCHEMA, source = legacy_source,
+            julia = string(VERSION), threads = Threads.nthreads() + 1,
+            serial_parallel_resume_parity = true, passed = true)
+        runner.save_atomic(joinpath(directory, "phase18_preflight_plan.jls"), certified_plan)
+        @test runner.checked_plan(directory; allow_thread_change = true) == certified_plan
+        @test_throws ErrorException runner.checked_plan(directory)
+    end
     @test_throws ErrorException runner.interval([1.0, 2.0])
     @test runner.interval(fill(-1.0, 5)).upper == -1.0
     kaggle_rates = Dict("hard_local" => 0.083, "ste" => 0.0723,
