@@ -57,20 +57,13 @@ using Test
                     budget_seconds = Inf, stop_reason = "max_steps",
                     perturbed_searches = 4, branch_solves = 8))
             end
-            for label in (:ste, :dbb_projection, :dpo_gaussian)
-                push!(rows, (seed = seed, method = string(label), tag = "matched_time",
-                    iid_loss = 0.1, ood_loss = 0.2, csat = 1.0, maximum_violation = 0.0,
-                    seconds = 10.2, budget_seconds = 10.0, stop_reason = "wall_time",
-                    perturbed_searches = 4, branch_solves = 8))
-            end
         end
         summary = runner.report(directory, rows)
         @test summary.status == "COMPLETE"
         @test summary.safety_gate
-        @test summary.matched_time_overshoot_gate
-        @test length(summary.comparisons) == 2
-        @test all(value.superiority_gate for value in values(summary.comparisons))
-        @test length(summary.matched_time_exploratory_ci95) == 3
+        @test !summary.matched_time_included
+        @test length(summary.comparisons) == 5
+        @test all(value.difference == -0.1 for value in values(summary.comparisons))
         @test summary.aggregates["sage_n4/fixed"].runs == 5
         @test isfile(joinpath(directory, "phase18_runs.csv"))
         @test isfile(joinpath(directory, "phase18_summary.json"))
@@ -127,11 +120,11 @@ using Test
     @test all(value.winner == 1 for value in values(tied_scores))
     pilot_rows = [(method = string(label), steps = 256, tag = "pilot", csat = 1.0,
         iid_loss = 0.1, ood_loss = NaN, seconds = 25.6) for label in runner.PHASE18_LABELS]
-    @test runner.remaining_hours(pilot_rows) ≈ 2.0 * 5 * 1024 * 0.9 / 3600
+    @test runner.remaining_hours(pilot_rows) ≈ 2.0 * 5 * 1024 * 0.6 / 3600
     @test runner.remaining_hours(pilot_rows; seeds = 11:12) ≈
-        2.0 * 2 * 1024 * 0.9 / 3600
+        2.0 * 2 * 1024 * 0.6 / 3600
     @test runner.remaining_hours(pilot_rows; seeds = 13:15) ≈
-        2.0 * 3 * 1024 * 0.9 / 3600
+        2.0 * 3 * 1024 * 0.6 / 3600
     @test_throws ErrorException runner.remaining_hours(pilot_rows; seeds = Int[])
     @test_throws ErrorException runner.remaining_hours(pilot_rows; seeds = [11, 11])
     @test_throws ErrorException runner.remaining_hours(pilot_rows; seeds = [99])

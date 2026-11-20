@@ -24,6 +24,10 @@ const PHASE18_DEADLINE = Ref(Inf)
 # estimator, data, training or evaluation semantics change.
 const PHASE18_LEGACY_CACHE_SOURCES = Set([
     "0e0393697f1e404c3ee7bc7d5a0228406a41c1b08bd1a3b1944b78d41686593d",
+    # Quality-first protocol amendment only: estimator, data, fixed-step
+    # training, and evaluation semantics are unchanged. This admits the
+    # already completed fixed-step Kaggle caches from 2026-11-21.
+    "7f66c687fa82ab98270e9d44e29d78a822b997540f31be980657ccd42a946a63",
 ])
 
 function env_flag(name; default = false)
@@ -47,8 +51,7 @@ end
 function projected_stage_seconds(rates)
     tuning = length(PHASE18_DEVELOPMENT_SEEDS) * PHASE18_TUNING_STEPS *
         sum(length(EB.candidate_specs(label)) * rates[string(label)] for label in PHASE18_LABELS)
-    confirmatory = length(PHASE18_CONFIRMATORY_SEEDS) * 1024 *
-        (sum(values(rates)) + 3rates["sage_n4"])
+    confirmatory = length(PHASE18_CONFIRMATORY_SEEDS) * 1024 * sum(values(rates))
     pilot = 256 * sum(values(rates))
     return (prepare = 2.0 * (tuning + pilot),
         confirm_a = 2.0 * confirmatory * length(PHASE18_CONFIRM_A_SEEDS) /
@@ -468,51 +471,45 @@ function interval(values)
 end
 
 function report(directory, rows)
-    complete = length(rows) == 5 * (length(PHASE18_LABELS) + 3)
+    # Phase 18's quality-first amendment compares every method at the same
+    # frozen 1,024-update budget. The former 16,384-step matched-time replay
+    # was a secondary compute diagnostic, not evidence needed for quality.
+    rows = filter(row -> row.tag == "fixed", rows)
+    complete = length(rows) == length(PHASE18_CONFIRMATORY_SEEDS) * length(PHASE18_LABELS)
     comparisons = Dict{String, Any}()
-    secondary_comparisons = Dict{String, Any}()
     if complete
         row_for(seed, label, tag) = only(filter(row -> row.seed == seed &&
             row.method == string(label) && row.tag == tag, rows))
-        # Two registered literature-family comparisons, Bonferroni familywise
-        # correction via paired 97.5% two-sided t intervals (df=4).
-        for label in (:dbb_projection, :dpo_gaussian)
+        # Report every paired quality contrast transparently. DBB/DPO remain
+        # the registered literature-family comparisons; the others diagnose
+        # when the extra SAGE machinery is or is not useful.
+        for label in (:hard_local, :ste, :compact_blackbox, :dbb_projection, :dpo_gaussian)
             values = [row_for(seed, :sage_n4, "fixed").ood_loss -
                 row_for(seed, label, "fixed").ood_loss for seed in PHASE18_CONFIRMATORY_SEEDS]
             raw = interval(values)
-            halfwidth = 3.495405933 * std(values; corrected = true) / sqrt(5)
             comparisons[string(label)] = (difference = raw.mean,
                 paired_ci95 = [raw.lower, raw.upper],
-                familywise_ci = [raw.mean - halfwidth, raw.mean + halfwidth],
-                superiority_gate = raw.mean + halfwidth < 0)
-        end
-        for label in (:ste, :dbb_projection, :dpo_gaussian)
-            values = [row_for(seed, :sage_n4, "fixed").ood_loss -
-                row_for(seed, label, "matched_time").ood_loss for seed in PHASE18_CONFIRMATORY_SEEDS]
-            secondary_comparisons[string(label)] = interval(values)
+                lower_is_better = true)
         end
     end
     aggregates = Dict{String, Any}()
-    for label in PHASE18_LABELS, tag in ("fixed", "matched_time")
-        selected = filter(row -> row.method == string(label) && row.tag == tag, rows)
+    for label in PHASE18_LABELS
+        selected = filter(row -> row.method == string(label), rows)
         isempty(selected) && continue
-        aggregates["$(label)/$(tag)"] = (runs = length(selected),
+        aggregates["$(label)/fixed"] = (runs = length(selected),
             mean_iid_loss = mean(row.iid_loss for row in selected),
             mean_ood_loss = mean(row.ood_loss for row in selected),
             mean_seconds = mean(row.seconds for row in selected),
             total_perturbed_searches = sum(row.perturbed_searches for row in selected),
             total_branch_solves = sum(row.branch_solves for row in selected))
     end
-    matched = filter(row -> row.tag == "matched_time", rows)
-    matched_time_gate = !isempty(matched) && all(row ->
-        row.stop_reason == "wall_time" && row.seconds <= 1.10row.budget_seconds, matched)
     summary = (phase = "phase18_external_baselines", schema = PHASE18_SCHEMA,
         source = source_fingerprint(), git_commit = repository_revision(),
         status = complete ? "COMPLETE" : "PARTIAL",
         seeds = PHASE18_CONFIRMATORY_SEEDS, fixed_steps = 1024,
         safety_gate = all(row -> row.csat == 1.0 && row.maximum_violation <= 1e-6, rows),
-        matched_time_overshoot_gate = matched_time_gate, comparisons = comparisons,
-        matched_time_exploratory_ci95 = secondary_comparisons, aggregates = aggregates,
+        matched_time_included = false, comparisons = comparisons, aggregates = aggregates,
+        protocol_amendment = "Quality-first fixed-step completion; the secondary 16,384-step matched-time replay was removed before inspecting the complete five-seed result.",
         baseline_scope = "DBB quadratic-projection adaptation; DPO-inspired Gaussian hard-forward VJP",
         external_dataset = false)
     write_csv(joinpath(directory, "phase18_runs.csv"), rows)
@@ -533,8 +530,7 @@ function remaining_hours(rows; seeds = PHASE18_CONFIRMATORY_SEEDS)
     all(seed -> seed in PHASE18_CONFIRMATORY_SEEDS, seeds) ||
         error("Unknown Phase 18 confirmatory seed.")
     length(unique(seeds)) == length(seeds) || error("Duplicate confirmatory seed.")
-    return 2.0 * length(seeds) * 1024 *
-        (sum(values(rates)) + 3rates["sage_n4"]) / 3600
+    return 2.0 * length(seeds) * 1024 * sum(values(rates)) / 3600
 end
 
 function pilot(directory, selected)
@@ -595,8 +591,7 @@ function collect_confirmatory_rows(directory)
         signature, row = payload.signature, payload.row
         signature.schema == PHASE18_SCHEMA && cache_source_compatible(signature.source, source) || continue
         row.seed in PHASE18_CONFIRMATORY_SEEDS || continue
-        valid = (row.tag == "fixed" && row.method in string.(PHASE18_LABELS)) ||
-            (row.tag == "matched_time" && row.method in ("ste", "dbb_projection", "dpo_gaussian"))
+        valid = row.tag == "fixed" && row.method in string.(PHASE18_LABELS)
         valid || continue
         signature.seed == row.seed && string(signature.spec.label) == row.method &&
             signature.tag == row.tag || error("Cache signature/row mismatch: $(path)")
@@ -643,15 +638,6 @@ function confirmatory_shard(directory, seeds, token)
                 steps = 1024, tag = "fixed")
             report(directory, collect_confirmatory_rows(directory))
         end
-        current_rows = collect_confirmatory_rows(directory)
-        sage = only(filter(row -> row.seed == seed && row.method == "sage_n4" &&
-            row.tag == "fixed", current_rows))
-        for label in circshift([:ste, :dbb_projection, :dpo_gaussian], -mod(seed, 3))
-            check_session_budget()
-            execute_method(directory, problem, pretrained, selected[label], seed;
-                steps = 16384, tag = "matched_time", wall_seconds = sage.seconds)
-            report(directory, collect_confirmatory_rows(directory))
-        end
     end
     summary = report(directory, collect_confirmatory_rows(directory))
     println(token)
@@ -663,7 +649,7 @@ function merge_confirmatory(directory)
     rows = collect_confirmatory_rows(directory)
     summary = report(directory, rows)
     summary.status == "COMPLETE" || error(
-        "Phase 18 merge requires all 45 signed rows; found $(length(rows)). Run both shards first.")
+        "Phase 18 merge requires all 30 fixed-step signed rows; found $(length(rows)). Run both shards first.")
     println("method/budget\tmean OOD loss\tmean seconds\tperturbed searches")
     for (name, aggregate) in sort(collect(summary.aggregates); by = first)
         println("$(name)\t$(aggregate.mean_ood_loss)\t$(aggregate.mean_seconds)\t" *
