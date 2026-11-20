@@ -24,6 +24,8 @@ import MathOptInterface as MOI
     include("test_phase15_adaptive_controller.jl")
     include("test_phase16_long_horizon.jl")
     include("test_phase17_sample_efficiency.jl")
+    include("test_phase18_external_baselines.jl")
+    include("test_phase18_runner.jl")
     include("test_standard_form.jl")
     include("test_hulls.jl")
     include("test_projection_backend.jl")

@@ -1159,12 +1159,21 @@ function train_method(
     resume_state = nothing,
     state_checkpoint_interval::Int = 0,
     state_checkpoint_callback = nothing,
+    gradient_backend = nothing,
+    evaluation_splits::Symbol = :both,
+    wall_time_limit_seconds::Real = Inf,
 )
     method in (
         :hard_local, :ste, :blackbox, :sage_cert, :sage_geometry,
         :sage_multiscale, :sage_adaptive,
-    ) ||
+    ) || gradient_backend !== nothing ||
         throw(ArgumentError("Unsupported job-shop method $(method)."))
+    evaluation_splits in (:both, :iid, :none) || throw(ArgumentError(
+        "evaluation_splits must be :both, :iid, or :none.",
+    ))
+    wall_time_limit_seconds > 0 || throw(ArgumentError(
+        "wall_time_limit_seconds must be positive.",
+    ))
     samples > 0 && iseven(samples) ||
         throw(ArgumentError("samples must be a positive even integer."))
     evaluation_interval > 0 ||
@@ -1224,8 +1233,11 @@ function train_method(
     end
 
     function record!(step, elapsed_seconds)
-        iid = evaluate_network(network, problem.iid; config = problem.config)
-        ood = evaluate_network(network, problem.ood; config = problem.config)
+        skipped = (task_loss = NaN, makespan_gap = NaN)
+        iid = evaluation_splits == :none ? skipped :
+            evaluate_network(network, problem.iid; config = problem.config)
+        ood = evaluation_splits == :both ?
+            evaluate_network(network, problem.ood; config = problem.config) : skipped
         current_ess = counters.effective_sample_size_count > 0 ?
             counters.effective_sample_size_sum / counters.effective_sample_size_count : NaN
         push!(trajectory, (
@@ -1272,7 +1284,13 @@ function train_method(
             elapsed_seconds = elapsed_seconds(),
         )
     end
+    executed_steps = completed_steps
+    stop_reason = :max_steps
     for step in (completed_steps + 1):length(sequence)
+        if elapsed_seconds() >= wall_time_limit_seconds
+            stop_reason = :wall_time
+            break
+        end
         index = sequence[step]
         gradients = _zero_gradients(network)
         point, cache = _forward(network, problem.train.inputs[:, index])
@@ -1286,7 +1304,8 @@ function train_method(
                 perturbation_rng, length(point), samples; beta = 2.0,
             ) : zeros(length(point), samples)
         output_gradient, _ = try
-            _gradient_for_sample(
+            backend = gradient_backend === nothing ? _gradient_for_sample : gradient_backend
+            backend(
                 method,
                 problem.train.instances[index],
                 point,
@@ -1307,6 +1326,7 @@ function train_method(
         all(isfinite, output_gradient) || error("Job-shop gradient became non-finite.")
         _backward!(gradients, network, cache, output_gradient)
         _adam_update!(network, gradients, state, Float64(learning_rate))
+        executed_steps = step
         step in checkpoint_set && (checkpoint_networks[step] = deepcopy(network))
         if step % evaluation_interval == 0 || step == length(sequence) ||
                 step in checkpoint_set
@@ -1316,6 +1336,14 @@ function train_method(
                 (step % state_checkpoint_interval == 0 || step == length(sequence))
             state_checkpoint_callback(state_snapshot(step))
         end
+    end
+    if executed_steps > completed_steps && trajectory[end].step != executed_steps
+        record!(executed_steps, elapsed_seconds())
+    end
+    if state_checkpoint_interval > 0 && executed_steps < length(sequence) &&
+            executed_steps > completed_steps &&
+            executed_steps % state_checkpoint_interval != 0
+        state_checkpoint_callback(state_snapshot(executed_steps))
     end
     training_seconds = elapsed_seconds()
     mean_ess = counters.effective_sample_size_count > 0 ?
@@ -1327,7 +1355,8 @@ function train_method(
         checkpoint_networks = checkpoint_networks,
         trajectory = trajectory,
         training_seconds = training_seconds,
-        steps = length(sequence),
+        steps = executed_steps,
+        stop_reason = stop_reason,
         center_global_searches = counters.center_global_searches,
         center_leaf_solves = counters.center_leaf_solves,
         center_relaxation_solves = counters.center_relaxation_solves,
