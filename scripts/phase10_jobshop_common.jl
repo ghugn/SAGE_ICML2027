@@ -574,7 +574,11 @@ function _record_sage_estimate!(counters, estimate)
     counters.competitor_branch_solves += estimate.competitor_branch_solves
     counters.geometry_branch_solves += estimate.geometry_branch_solves
     counters.sample_certificates += estimate.sample_stability_certificates
-    counters.lazy_leaf_solves += estimate.lazy_leaf_solves
+    # A SAGE lazy-search leaf is already included in
+    # `estimate.competitor_branch_solves`. Adding it again to the generic lazy
+    # accumulator made `complete_branch_solves` count the same QP twice. Keep
+    # `lazy_leaf_solves` for standalone black-box/probe searches; the SAGE
+    # competitor counter is the unique-work accumulator for these leaves.
     counters.lazy_relaxation_solves += estimate.lazy_relaxation_solves
     counters.switching_samples += estimate.switching_samples
     counters.unresolved_samples += estimate.unresolved_samples
