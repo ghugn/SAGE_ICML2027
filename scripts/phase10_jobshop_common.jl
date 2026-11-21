@@ -1161,7 +1161,6 @@ function train_method(
     state_checkpoint_callback = nothing,
     gradient_backend = nothing,
     evaluation_splits::Symbol = :both,
-    wall_time_limit_seconds::Real = Inf,
 )
     method in (
         :hard_local, :ste, :blackbox, :sage_cert, :sage_geometry,
@@ -1170,9 +1169,6 @@ function train_method(
         throw(ArgumentError("Unsupported job-shop method $(method)."))
     evaluation_splits in (:both, :iid, :none) || throw(ArgumentError(
         "evaluation_splits must be :both, :iid, or :none.",
-    ))
-    wall_time_limit_seconds > 0 || throw(ArgumentError(
-        "wall_time_limit_seconds must be positive.",
     ))
     samples > 0 && iseven(samples) ||
         throw(ArgumentError("samples must be a positive even integer."))
@@ -1285,12 +1281,7 @@ function train_method(
         )
     end
     executed_steps = completed_steps
-    stop_reason = :max_steps
     for step in (completed_steps + 1):length(sequence)
-        if elapsed_seconds() >= wall_time_limit_seconds
-            stop_reason = :wall_time
-            break
-        end
         index = sequence[step]
         gradients = _zero_gradients(network)
         point, cache = _forward(network, problem.train.inputs[:, index])
@@ -1356,7 +1347,6 @@ function train_method(
         trajectory = trajectory,
         training_seconds = training_seconds,
         steps = executed_steps,
-        stop_reason = stop_reason,
         center_global_searches = counters.center_global_searches,
         center_leaf_solves = counters.center_leaf_solves,
         center_relaxation_solves = counters.center_relaxation_solves,

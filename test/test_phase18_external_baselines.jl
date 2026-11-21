@@ -98,13 +98,6 @@ using Statistics
         @test evaluated.csat == 1.0
     end
 
-    # A zero-work time stop must return actual completed steps, not max_steps.
-    stopped = EB.train_external(problem, pretrained, EB.default_spec(:ste), 1;
-        steps = 4, wall_time_limit_seconds = eps())
-    @test stopped.steps == 0
-    @test stopped.stop_reason == :wall_time
-    @test EB.network_equal(stopped.network, pretrained)
-
     # Existing default training behavior and the new hook agree exactly.
     original = JS.train_method(problem, pretrained, :ste, 1;
         epochs = 1, max_steps = 2, samples = 4, radius = 0.5, learning_rate = 1e-3,

@@ -11,35 +11,10 @@ using Test
     @test length(runner.source_fingerprint()) == 64
     @test runner.source_fingerprint() == runner.source_fingerprint()
     legacy_source = first(runner.PHASE18_LEGACY_CACHE_SOURCES)
-    @test runner.cache_source_compatible(legacy_source)
+    @test all(runner.cache_source_compatible, runner.PHASE18_LEGACY_CACHE_SOURCES)
     @test !runner.cache_source_compatible("unknown-source")
-    @test withenv("SAGE_PHASE18_BOOLEAN_TEST" => "true") do
-        runner.env_flag("SAGE_PHASE18_BOOLEAN_TEST")
-    end
-    @test !withenv("SAGE_PHASE18_BOOLEAN_TEST" => "off") do
-        runner.env_flag("SAGE_PHASE18_BOOLEAN_TEST"; default = true)
-    end
-    @test_throws ErrorException withenv("SAGE_PHASE18_BOOLEAN_TEST" => "maybe") do
-        runner.env_flag("SAGE_PHASE18_BOOLEAN_TEST")
-    end
-    @test isinf(runner.session_deadline((time_limit_enforced = false, max_hours = 1.0)))
-    mktempdir() do directory
-        certified_plan = (schema = runner.PHASE18_SCHEMA, source = legacy_source,
-            julia = string(VERSION), threads = Threads.nthreads() + 1,
-            serial_parallel_resume_parity = true, passed = true)
-        runner.save_atomic(joinpath(directory, "phase18_preflight_plan.jls"), certified_plan)
-        @test runner.checked_plan(directory; allow_thread_change = true) == certified_plan
-        @test_throws ErrorException runner.checked_plan(directory)
-    end
     @test_throws ErrorException runner.interval([1.0, 2.0])
     @test runner.interval(fill(-1.0, 5)).upper == -1.0
-    kaggle_rates = Dict("hard_local" => 0.083, "ste" => 0.0723,
-        "compact_blackbox" => 0.1947, "dbb_projection" => 0.1615,
-        "dpo_gaussian" => 0.1859, "sage_n4" => 0.2529)
-    staged = runner.projected_stage_seconds(kaggle_rates)
-    @test sum(values(staged)) / 3600 > 4.0
-    @test maximum(values(staged)) / 3600 < 4.0
-    @test staged.confirm_b > staged.confirm_a
 
     mktempdir() do directory
         problem, pretrained = runner.EB.setup_problem(1; small = true)
@@ -62,14 +37,13 @@ using Test
                 push!(rows, (seed = seed, method = string(label), tag = "fixed",
                     iid_loss = 0.1, ood_loss = label == :sage_n4 ? 0.1 : 0.2,
                     csat = 1.0, maximum_violation = 0.0, seconds = 10.0,
-                    budget_seconds = Inf, stop_reason = "max_steps",
                     perturbed_searches = 4, branch_solves = 8))
             end
         end
         summary = runner.report(directory, rows)
         @test summary.status == "COMPLETE"
         @test summary.safety_gate
-        @test !summary.matched_time_included
+        @test summary.protocol == "fixed_1024_updates"
         @test length(summary.comparisons) == 5
         @test all(value.difference == -0.1 for value in values(summary.comparisons))
         @test summary.aggregates["sage_n4/fixed"].runs == 5
@@ -95,7 +69,8 @@ using Test
 
     expected_signature = (schema = runner.PHASE18_SCHEMA,
         source = runner.source_fingerprint(), seed = 1, tag = "pilot")
-    legacy_signature = merge(expected_signature, (source = legacy_source,))
+    legacy_signature = merge(expected_signature,
+        (source = legacy_source, threads = 4, wall_seconds = Inf))
     @test runner.signature_compatible(legacy_signature, expected_signature)
     @test !runner.signature_compatible(
         merge(legacy_signature, (seed = 2,)), expected_signature)
@@ -126,19 +101,4 @@ using Test
     tied = [merge(row, (iid_loss = 0.2,)) for row in validation]
     _, tied_scores = runner.select_candidates(tied)
     @test all(value.winner == 1 for value in values(tied_scores))
-    pilot_rows = [(method = string(label), steps = 256, tag = "pilot", csat = 1.0,
-        iid_loss = 0.1, ood_loss = NaN, seconds = 25.6) for label in runner.PHASE18_LABELS]
-    @test runner.remaining_hours(pilot_rows) ≈ 2.0 * 5 * 1024 * 0.6 / 3600
-    @test runner.remaining_hours(pilot_rows; seeds = 11:12) ≈
-        2.0 * 2 * 1024 * 0.6 / 3600
-    @test runner.remaining_hours(pilot_rows; seeds = 13:15) ≈
-        2.0 * 3 * 1024 * 0.6 / 3600
-    @test_throws ErrorException runner.remaining_hours(pilot_rows; seeds = Int[])
-    @test_throws ErrorException runner.remaining_hours(pilot_rows; seeds = [11, 11])
-    @test_throws ErrorException runner.remaining_hours(pilot_rows; seeds = [99])
-    @test_throws ErrorException runner.remaining_hours(pilot_rows[2:end])
-    @test_throws ErrorException runner.remaining_hours(vcat(pilot_rows, pilot_rows[1:1]))
-    contaminated_pilot = copy(pilot_rows)
-    contaminated_pilot[1] = merge(contaminated_pilot[1], (ood_loss = 0.0,))
-    @test_throws ErrorException runner.remaining_hours(contaminated_pilot)
 end

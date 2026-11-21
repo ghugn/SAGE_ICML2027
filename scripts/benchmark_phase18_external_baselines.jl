@@ -13,54 +13,14 @@ const PHASE18_SCHEMA = 3
 const PHASE18_LABELS = (:hard_local, :ste, :compact_blackbox, :dbb_projection,
     :dpo_gaussian, :sage_n4)
 const PHASE18_CONFIRMATORY_SEEDS = collect(11:15)
-const PHASE18_CONFIRM_A_SEEDS = collect(11:12)
-const PHASE18_CONFIRM_B_SEEDS = collect(13:15)
 const PHASE18_DEVELOPMENT_SEEDS = [1, 2]
 const PHASE18_TUNING_STEPS = 128
-const PHASE18_DEADLINE = Ref(Inf)
-# Exact schema-3 source used by the first Kaggle prepare run. The subsequent
-# source change is orchestration-only (ETA policy/cache migration), so these
-# signed caches remain scientifically compatible. Never add a hash here when
-# estimator, data, training or evaluation semantics change.
+# Exact scientific source of the imported partial bundle. No estimator, data,
+# selection, training-budget, or evaluation setting changed after this source.
 const PHASE18_LEGACY_CACHE_SOURCES = Set([
-    "0e0393697f1e404c3ee7bc7d5a0228406a41c1b08bd1a3b1944b78d41686593d",
-    # Quality-first protocol amendment only: estimator, data, fixed-step
-    # training, and evaluation semantics are unchanged. This admits the
-    # already completed fixed-step Kaggle caches from 2026-11-21.
     "7f66c687fa82ab98270e9d44e29d78a822b997540f31be980657ccd42a946a63",
-    # Fixed-step quality runner before adding process-level seed sharding.
-    "193f4c0cc3ca9927b98058f39909eddc7cb9ada38abe02cc1c2f4a6ea4ede4da",
+    "de6f422b4efdc91c9a46c4728979504af42af2084ec1213c67deed11661ed0d0",
 ])
-
-function env_flag(name; default = false)
-    value = lowercase(strip(get(ENV, name, default ? "true" : "false")))
-    value in ("1", "true", "yes", "on") && return true
-    value in ("0", "false", "no", "off") && return false
-    error("$(name) must be a boolean flag, got $(repr(value)).")
-end
-
-function profile_specs(label)
-    base = EB.default_spec(label)
-    candidates = EB.candidate_specs(label)
-    # Central configuration plus largest scale and both LR endpoints. These
-    # discovery-only probes bound planning costs better than one default run.
-    scale_extreme = label == :dbb_projection ? merge(base, (lambda = 5.0,)) :
-        label == :dpo_gaussian ? merge(base, (gaussian_scale = 2.0,)) :
-        label in (:sage_n4, :compact_blackbox) ? merge(base, (radius = 1.0,)) : base
-    return unique([base, scale_extreme, first(candidates), last(candidates)])
-end
-
-function projected_stage_seconds(rates)
-    tuning = length(PHASE18_DEVELOPMENT_SEEDS) * PHASE18_TUNING_STEPS *
-        sum(length(EB.candidate_specs(label)) * rates[string(label)] for label in PHASE18_LABELS)
-    confirmatory = length(PHASE18_CONFIRMATORY_SEEDS) * 1024 * sum(values(rates))
-    pilot = 256 * sum(values(rates))
-    return (prepare = 2.0 * (tuning + pilot),
-        confirm_a = 2.0 * confirmatory * length(PHASE18_CONFIRM_A_SEEDS) /
-            length(PHASE18_CONFIRMATORY_SEEDS),
-        confirm_b = 2.0 * confirmatory * length(PHASE18_CONFIRM_B_SEEDS) /
-            length(PHASE18_CONFIRMATORY_SEEDS), merge = 0.0)
-end
 
 function repository_revision()
     try
@@ -88,14 +48,16 @@ end
 cache_source_compatible(source, current = source_fingerprint()) =
     source == current || source in PHASE18_LEGACY_CACHE_SOURCES
 
+function scientific_signature(signature)
+    ignored = (:source, :threads, :wall_seconds)
+    return (; (name => getproperty(signature, name)
+        for name in propertynames(signature) if !(name in ignored))...)
+end
+
 function signature_compatible(saved, expected)
     hasproperty(saved, :source) && cache_source_compatible(saved.source, expected.source) ||
         return false
-    return merge(saved, (source = expected.source,)) == expected
-end
-
-function session_deadline(plan)
-    return plan.time_limit_enforced ? time() + plan.max_hours * 3600 : Inf
+    return scientific_signature(saved) == scientific_signature(expected)
 end
 
 function save_atomic(path, value)
@@ -149,34 +111,6 @@ function write_csv(path, rows)
     mv(temporary, path; force = true)
 end
 
-function process_cpu_seconds()
-    if Sys.iswindows()
-        # MSVC clock() measures wall time, so it cannot measure CPU use.
-        handle = ccall((:GetCurrentProcess, "kernel32"), Ptr{Cvoid}, ())
-        created, exited, kernel, user = (Ref{UInt64}(0) for _ in 1:4)
-        ok = ccall((:GetProcessTimes, "kernel32"), Int32,
-            (Ptr{Cvoid}, Ref{UInt64}, Ref{UInt64}, Ref{UInt64}, Ref{UInt64}),
-            handle, created, exited, kernel, user)
-        ok != 0 || error("GetProcessTimes failed.")
-        return (kernel[] + user[]) / 1e7
-    end
-    return ccall(:clock, Clong, ()) / 1_000_000
-end
-
-function resource_snapshot()
-    memory = if Sys.islinux() && isfile("/proc/self/status")
-        text = read("/proc/self/status", String)
-        matched = match(r"VmRSS:\s+(\d+)", text)
-        matched === nothing ? 0 : parse(Int, matched.captures[1]) * 1024
-    else
-        # Julia GC accounting is reported separately; this is not RSS.
-        0
-    end
-    return (cpu_seconds = process_cpu_seconds(),
-        rss_bytes = memory, julia_live_bytes = Base.gc_live_bytes(),
-        threads = Threads.nthreads())
-end
-
 function safety(result, evaluation)
     evaluation.csat == 1.0 && evaluation.unresolved == 0 &&
         evaluation.maximum_violation <= 1e-6 && result.logical_failures == 0 &&
@@ -214,119 +148,9 @@ function smoke(directory)
     println("PHASE18_EXTERNAL_SMOKE=PASS")
 end
 
-function preflight(directory)
-    starting_source = source_fingerprint()
-    Threads.nthreads() >= 2 || error("Start Julia with --threads=auto (at least 2 threads).")
-    steps = parse(Int, get(ENV, "SAGE_PHASE18_PREFLIGHT_STEPS", "16"))
-    10 <= steps <= 50 || error("Preflight must use 10-50 representative updates.")
-    problem, pretrained = EB.setup_problem(1)
-    rates = Dict{String, Float64}()
-    observed = Dict{String, Int}()
-    work = Dict{String, Any}()
-    probe_rates = Dict{String, Any}()
-    parity = true
-    speedup = NaN
-    starting_resources = resource_snapshot()
-    started = time()
-    for label in PHASE18_LABELS
-        spec = EB.default_spec(label)
-        EB.train_external(problem, pretrained, spec, 1; steps = 1) # compilation warmup
-        result = EB.train_external(problem, pretrained, spec, 1; steps = steps)
-        rates[string(label)] = result.training_seconds / steps
-        observed[string(label)] = result.sample_threads_used
-        work[string(label)] = (center_searches = result.center_global_searches,
-            perturbed_searches = result.perturbed_global_searches,
-            branch_solves = result.complete_branch_solves,
-            relaxation_solves = result.center_relaxation_solves + result.lazy_relaxation_solves)
-        if label in (:sage_n4, :dpo_gaussian, :compact_blackbox)
-            serial = EB.train_external(problem, pretrained, spec, 1;
-                steps = steps, parallel = false)
-            parity &= EB.network_equal(serial.network, result.network) &&
-                serial.complete_branch_solves == result.complete_branch_solves
-            label == :sage_n4 && (speedup = serial.training_seconds / result.training_seconds)
-        end
-        state_path = joinpath(directory, "preflight_$(label)_state.jls")
-        EB.train_external(problem, pretrained, spec, 1; steps = steps ÷ 2,
-            state_checkpoint_interval = steps ÷ 2,
-            state_checkpoint_callback = state -> save_atomic(state_path, state))
-        restored = EB.train_external(problem, pretrained, spec, 1; steps = steps,
-            resume_state = open(deserialize, state_path))
-        parity &= EB.network_equal(result.network, restored.network) &&
-            result.complete_branch_solves == restored.complete_branch_solves
-        probes = [(spec = spec, seconds_per_update = rates[string(label)])]
-        for alternative in profile_specs(label)
-            alternative == spec && continue
-            probe = EB.train_external(problem, pretrained, alternative, 1; steps = steps)
-            push!(probes, (spec = alternative,
-                seconds_per_update = probe.training_seconds / steps))
-        end
-        probe_rates[string(label)] = probes
-        rates[string(label)] = maximum(probe.seconds_per_update for probe in probes)
-        println("[phase18-preflight] method=$(label) s/update=$(round(rates[string(label)]; digits=4)) " *
-            "observed_threads=$(observed[string(label)]) parity=$(parity)"); flush(stdout)
-    end
-    # Conservative 2x allowance: past Phase 17's linear ETA underestimated the
-    # complete run. Include equal development tuning and three real-time replays.
-    stage_seconds = projected_stage_seconds(rates)
-    predicted_seconds = sum(values(stage_seconds))
-    max_hours = parse(Float64, get(ENV, "SAGE_PHASE18_MAX_HOURS", "4.0"))
-    eta_within_limit = maximum(values(stage_seconds)) <= max_hours * 3600
-    time_limit_enforced = env_flag("SAGE_PHASE18_ENFORCE_TIME_LIMIT"; default = false)
-    eta_gate = !time_limit_enforced || eta_within_limit
-    thread_gate = all(observed[string(label)] >= 2
-        for label in (:sage_n4, :dpo_gaussian, :compact_blackbox))
-    ending_resources = resource_snapshot()
-    cpu_utilization = 100 * (ending_resources.cpu_seconds - starting_resources.cpu_seconds) /
-        max(time() - started, eps())
-    source_fingerprint() == starting_source || error("Source changed during preflight; repeat it.")
-    plan = (schema = PHASE18_SCHEMA, source = starting_source, git_commit = repository_revision(),
-        julia = string(VERSION), threads = Threads.nthreads(), preflight_steps = steps,
-        rates = rates, observed_threads = observed, solver_work = work,
-        profiled_configurations = probe_rates, tuning_steps = PHASE18_TUNING_STEPS,
-        tuning_candidates_per_method = 9,
-        serial_parallel_resume_parity = parity,
-        sage_speedup = speedup, predicted_hours = predicted_seconds / 3600,
-        predicted_stage_hours = (prepare = stage_seconds.prepare / 3600,
-            confirm_a = stage_seconds.confirm_a / 3600,
-            confirm_b = stage_seconds.confirm_b / 3600, merge = 0.0),
-        max_hours = max_hours, time_limit_enforced = time_limit_enforced,
-        eta_within_limit = eta_within_limit, eta_gate = eta_gate, thread_gate = thread_gate,
-        approximate_cpu_percent = cpu_utilization, resources = ending_resources,
-        passed = parity && thread_gate && eta_gate)
-    save_atomic(joinpath(directory, "phase18_preflight_plan.jls"), plan)
-    write_json(joinpath(directory, "phase18_preflight_plan.json"), plan)
-    println("SAGE end-to-end serial/threaded speedup: $(speedup)")
-    println("Predicted complete study hours (2x margin): $(plan.predicted_hours)")
-    println("Predicted staged hours: $(plan.predicted_stage_hours)")
-    println("ETA policy: ", time_limit_enforced ? "hard limit (opt-in)" : "advisory only")
-    println("CPU decision: independent CPU-bound QP searches; GPU path absent.")
-    println("PHASE18_PREFLIGHT=", plan.passed ? "PASS" : "FAIL")
-    plan.passed || error("Preflight failed: inspect parity, actual threads and ETA before a long run.")
-end
-
-function checked_plan(directory; allow_thread_change = false)
-    path = joinpath(directory, "phase18_preflight_plan.jls")
-    isfile(path) || error("Run Phase 18 preflight first.")
-    plan = open(deserialize, path)
-    plan.schema == PHASE18_SCHEMA || error("Preflight schema changed; rerun preflight.")
-    cache_source_compatible(plan.source) || error("Source changed since preflight; rerun preflight.")
-    plan.julia == string(VERSION) || error("Julia version changed since preflight.")
-    if allow_thread_change
-        plan.serial_parallel_resume_parity || error(
-            "Preflight did not certify serial/threaded parity.")
-    else
-        plan.threads == Threads.nthreads() || error(
-            "Thread configuration changed since preflight.")
-    end
-    plan.passed || error("Preflight did not pass.")
-    return plan
-end
-
-function execute_method(directory, problem, pretrained, spec, seed;
-        steps, tag, wall_seconds = Inf)
+function execute_method(directory, problem, pretrained, spec, seed; steps, tag)
     signature = (schema = PHASE18_SCHEMA, source = source_fingerprint(),
-        julia = string(VERSION), threads = Threads.nthreads(), seed = seed,
-        spec = spec, steps = steps, tag = tag, wall_seconds = wall_seconds)
+        julia = string(VERSION), seed = seed, spec = spec, steps = steps, tag = tag)
     stem = "seed_$(seed)_$(spec.label)_$(tag)"
     state_path = joinpath(directory, "training_states", stem * ".jls")
     model_path = joinpath(directory, "model_checkpoints", stem * ".jls")
@@ -350,27 +174,15 @@ function execute_method(directory, problem, pretrained, spec, seed;
     else
         nothing
     end
-    resource_start = resource_snapshot()
-    wall_started = time()
     callback = state -> begin
         save_atomic(state_path, (signature = signature, state = state))
-        resources = resource_snapshot()
-        progress_seconds = state.elapsed_seconds
-        projected = isfinite(wall_seconds) ? max(0.0, wall_seconds - progress_seconds) :
-            progress_seconds / max(state.completed_steps, 1) * (steps - state.completed_steps)
-        cpu_percent = 100 * (resources.cpu_seconds - resource_start.cpu_seconds) /
-            max(time() - wall_started, eps())
         println("[phase18-progress] $(stem) step=$(state.completed_steps)/$(steps) " *
-            "elapsed=$(round(progress_seconds;digits=1)) ETA_s=$(round(projected;digits=1)) " *
-            "CPU%=$(round(cpu_percent;digits=1)) RSS_MB=$(round(resources.rss_bytes/2.0^20;digits=1)) " *
-            "checkpoint=saved threads=$(state.counters.sample_threads_used)")
+            "elapsed=$(round(state.elapsed_seconds;digits=1)) checkpoint=saved")
         flush(stdout)
-        time() <= PHASE18_DEADLINE[] || error(
-            "Phase 18 session deadline reached; the current training state was saved. Resume unchanged.")
     end
     result = EB.train_external(problem, pretrained, spec, seed; steps = steps,
-        wall_time_limit_seconds = wall_seconds, resume_state = resume_state,
-        state_checkpoint_interval = 16, state_checkpoint_callback = callback)
+        resume_state = resume_state, state_checkpoint_interval = 16,
+        state_checkpoint_callback = callback)
     validation_only = startswith(tag, "tune") || tag == "pilot"
     evaluation_started = time_ns()
     iid = evaluate_network(result.network, problem.iid; config = problem.config)
@@ -384,13 +196,13 @@ function execute_method(directory, problem, pretrained, spec, seed;
         ood_loss = validation_only ? NaN : ood.task_loss,
         ood_makespan_gap = validation_only ? NaN : ood.makespan_gap,
         csat = min(iid.csat, ood.csat), maximum_violation = max(iid.maximum_violation, ood.maximum_violation),
-        seconds = result.training_seconds, budget_seconds = wall_seconds,
+        seconds = result.training_seconds,
         evaluation_seconds = (time_ns() - evaluation_started) / 1e9,
         center_searches = result.center_global_searches,
         perturbed_searches = result.perturbed_global_searches,
         branch_solves = result.complete_branch_solves,
         relaxation_solves = result.center_relaxation_solves + result.lazy_relaxation_solves,
-        observed_threads = result.sample_threads_used, stop_reason = string(result.stop_reason))
+        observed_threads = result.sample_threads_used)
     save_atomic(model_path, (signature = signature, network = result.network, row = row))
     reloaded = open(deserialize, model_path)
     EB.network_equal(result.network, reloaded.network) || error("Model reload mismatch.")
@@ -435,13 +247,10 @@ function select_candidates(rows; labels = PHASE18_LABELS, seeds = PHASE18_DEVELO
 end
 
 function tune(directory)
-    plan = checked_plan(directory)
-    plan.time_limit_enforced && !isfinite(PHASE18_DEADLINE[]) &&
-        (PHASE18_DEADLINE[] = session_deadline(plan))
     selection_path = joinpath(directory, "phase18_selection.jls")
     if isfile(selection_path)
         frozen = open(deserialize, selection_path)
-        cache_source_compatible(frozen.source, plan.source) ||
+        cache_source_compatible(frozen.source) ||
             error("Frozen selection source mismatch.")
         println("[phase18-resume] frozen validation selection loaded")
         return frozen.selected
@@ -459,14 +268,14 @@ function tune(directory)
     end
     selected, scores = select_candidates(rows)
     save_atomic(selection_path, (schema = PHASE18_SCHEMA,
-        source = plan.source, selected = selected))
+        source = source_fingerprint(), selected = selected))
     write_json(joinpath(directory, "phase18_selection.json"),
         (schema = PHASE18_SCHEMA, development_seeds = PHASE18_DEVELOPMENT_SEEDS,
             validation_steps = PHASE18_TUNING_STEPS,
             validation_pool_seed = 18_020_002, candidates_per_method = 9,
             total_validation_training_seconds = sum(row.seconds for row in rows),
             total_validation_perturbed_searches = sum(row.perturbed_searches for row in rows),
-            source = plan.source, scores = scores))
+            source = source_fingerprint(), scores = scores))
     println("PHASE18_VALIDATION_SELECTION=COMPLETE")
     return selected
 end
@@ -479,9 +288,6 @@ function interval(values)
 end
 
 function report(directory, rows)
-    # Phase 18's quality-first amendment compares every method at the same
-    # frozen 1,024-update budget. The former 16,384-step matched-time replay
-    # was a secondary compute diagnostic, not evidence needed for quality.
     rows = filter(row -> row.tag == "fixed", rows)
     complete = length(rows) == length(PHASE18_CONFIRMATORY_SEEDS) * length(PHASE18_LABELS)
     comparisons = Dict{String, Any}()
@@ -514,10 +320,10 @@ function report(directory, rows)
     summary = (phase = "phase18_external_baselines", schema = PHASE18_SCHEMA,
         source = source_fingerprint(), git_commit = repository_revision(),
         status = complete ? "COMPLETE" : "PARTIAL",
-        seeds = PHASE18_CONFIRMATORY_SEEDS, fixed_steps = 1024,
+        protocol = "fixed_1024_updates", seeds = PHASE18_CONFIRMATORY_SEEDS,
+        fixed_steps = 1024,
         safety_gate = all(row -> row.csat == 1.0 && row.maximum_violation <= 1e-6, rows),
-        matched_time_included = false, comparisons = comparisons, aggregates = aggregates,
-        protocol_amendment = "Quality-first fixed-step completion; the secondary 16,384-step matched-time replay was removed before inspecting the complete five-seed result.",
+        comparisons = comparisons, aggregates = aggregates,
         baseline_scope = "DBB quadratic-projection adaptation; DPO-inspired Gaussian hard-forward VJP",
         external_dataset = false)
     write_csv(joinpath(directory, "phase18_runs.csv"), rows)
@@ -525,24 +331,7 @@ function report(directory, rows)
     return summary
 end
 
-function remaining_hours(rows; seeds = PHASE18_CONFIRMATORY_SEEDS)
-    labels = sort(unique(row.method for row in rows))
-    labels == sort(string.(collect(PHASE18_LABELS))) ||
-        error("Selected-settings pilot must cover all six methods exactly once.")
-    length(rows) == length(PHASE18_LABELS) || error("Duplicate selected-settings pilot rows.")
-    all(row -> row.steps == 256 && row.tag == "pilot" && row.csat == 1.0 &&
-        isfinite(row.iid_loss) && isnan(row.ood_loss) && row.seconds > 0, rows) ||
-        error("Invalid validation-only selected-settings pilot.")
-    rates = Dict(row.method => row.seconds / row.steps for row in rows)
-    isempty(seeds) && error("At least one confirmatory seed is required.")
-    all(seed -> seed in PHASE18_CONFIRMATORY_SEEDS, seeds) ||
-        error("Unknown Phase 18 confirmatory seed.")
-    length(unique(seeds)) == length(seeds) || error("Duplicate confirmatory seed.")
-    return 2.0 * length(seeds) * 1024 * sum(values(rates)) / 3600
-end
-
 function pilot(directory, selected)
-    plan = checked_plan(directory)
     problem, pretrained = EB.setup_problem(1)
     rows = NamedTuple[]
     for label in PHASE18_LABELS
@@ -551,39 +340,27 @@ function pilot(directory, selected)
             steps = 256, tag = "pilot"))
     end
     write_csv(joinpath(directory, "phase18_pilot.csv"), rows)
-    total_hours = remaining_hours(rows)
-    shard_hours = (confirm_a = remaining_hours(rows; seeds = PHASE18_CONFIRM_A_SEEDS),
-        confirm_b = remaining_hours(rows; seeds = PHASE18_CONFIRM_B_SEEDS))
-    record = (schema = PHASE18_SCHEMA, source = plan.source, selected = selected,
-        predicted_confirmatory_hours = total_hours,
-        predicted_shard_hours = shard_hours, maximum_hours = plan.max_hours,
-        eta_within_limit = maximum(values(shard_hours)) <= plan.max_hours,
-        passed = !plan.time_limit_enforced || maximum(values(shard_hours)) <= plan.max_hours,
-        rows = rows)
+    record = (schema = PHASE18_SCHEMA, source = source_fingerprint(),
+        selected = selected, rows = rows)
     save_atomic(joinpath(directory, "phase18_pilot_plan.jls"), record)
     write_json(joinpath(directory, "phase18_pilot_plan.json"), record)
-    println("Selected-settings complete confirmatory ETA (2x margin): $(total_hours) hours")
-    println("Selected-settings staged ETA: $(shard_hours)")
     println("PHASE18_EXTERNAL_PILOT=COMPLETE")
-    record.passed || error("Selected-settings pilot exceeds the opt-in hard time ceiling.")
     return record
 end
 
-function checked_selection_and_pilot(directory; allow_thread_change = false)
-    plan = checked_plan(directory; allow_thread_change = allow_thread_change)
+function checked_selection_and_pilot(directory)
     selection_path = joinpath(directory, "phase18_selection.jls")
     pilot_path = joinpath(directory, "phase18_pilot_plan.jls")
     isfile(selection_path) || error("Run the Phase 18 prepare stage first (selection missing).")
     isfile(pilot_path) || error("Run the Phase 18 prepare stage first (pilot missing).")
     selection = open(deserialize, selection_path)
     pilot_record = open(deserialize, pilot_path)
-    selection.schema == PHASE18_SCHEMA && cache_source_compatible(selection.source, plan.source) ||
+    selection.schema == PHASE18_SCHEMA && cache_source_compatible(selection.source) ||
         error("Frozen selection source/schema mismatch.")
-    cache_source_compatible(pilot_record.source, plan.source) &&
-        pilot_record.schema == PHASE18_SCHEMA ||
+    cache_source_compatible(pilot_record.source) && pilot_record.schema == PHASE18_SCHEMA ||
         error("Pilot plan source/schema mismatch.")
-    pilot_record.passed || error("Selected-settings staged ETA did not pass.")
-    return plan, selection.selected, pilot_record
+    selection.selected == pilot_record.selected || error("Selection/pilot mismatch.")
+    return selection.selected
 end
 
 function collect_confirmatory_rows(directory)
@@ -613,47 +390,24 @@ function collect_confirmatory_rows(directory)
 end
 
 function prepare(directory)
-    plan = checked_plan(directory)
-    PHASE18_DEADLINE[] = session_deadline(plan)
     selected = tune(directory)
     pilot(directory, selected)
     println("PHASE18_EXTERNAL_PREPARE=COMPLETE")
 end
 
-function confirmatory_shard(directory, seeds, token; deferred_report = false,
-        allow_thread_change = false)
-    lowercase(get(ENV, "SAGE_PHASE18_ALLOW_CONFIRMATORY", "0")) in ("1", "true") ||
-        error("Set SAGE_PHASE18_ALLOW_CONFIRMATORY=1 after reviewing preflight and validation plan.")
-    plan, selected, pilot_record = checked_selection_and_pilot(directory;
-        allow_thread_change = allow_thread_change)
-    all(seed -> seed in PHASE18_CONFIRMATORY_SEEDS, seeds) || error("Unregistered Phase 18 shard seed.")
-    shard_eta = remaining_hours(pilot_record.rows; seeds = seeds)
-    (!plan.time_limit_enforced || shard_eta <= plan.max_hours) ||
-        error("This confirmatory shard exceeds the opt-in hard session ceiling.")
-    PHASE18_DEADLINE[] = session_deadline(plan)
-    function check_session_budget()
-        time() < PHASE18_DEADLINE[] || error(
-            "Session time budget reached; completed methods and training states are saved. Resume unchanged.")
+function confirmatory_seed(directory, seed)
+    seed in PHASE18_CONFIRMATORY_SEEDS || error("Seed must be one of 11:15.")
+    selected = checked_selection_and_pilot(directory)
+    problem, pretrained = EB.setup_problem(seed; pool = :heldout)
+    for label in PHASE18_LABELS
+        EB.train_external(problem, pretrained, selected[label], seed; steps = 1)
     end
-    for seed in seeds
-        check_session_budget()
-        problem, pretrained = EB.setup_problem(seed; pool = :heldout)
-        # Warm every method outside all reported training budgets.
-        for label in PHASE18_LABELS
-            EB.train_external(problem, pretrained, selected[label], seed; steps = 1)
-        end
-        for label in circshift(collect(PHASE18_LABELS), -mod(seed, length(PHASE18_LABELS)))
-            check_session_budget()
-            execute_method(directory, problem, pretrained, selected[label], seed;
-                steps = 1024, tag = "fixed")
-            deferred_report || report(directory, collect_confirmatory_rows(directory))
-        end
+    for label in circshift(collect(PHASE18_LABELS), -mod(seed, length(PHASE18_LABELS)))
+        execute_method(directory, problem, pretrained, selected[label], seed;
+            steps = 1024, tag = "fixed")
     end
-    summary = deferred_report ?
-        (status = "DEFERRED", fixed_rows = length(collect_confirmatory_rows(directory))) :
-        report(directory, collect_confirmatory_rows(directory))
-    println(token)
-    return summary
+    println("PHASE18_CONFIRM_SEED=COMPLETE")
+    return (seed = seed, fixed_rows = length(collect_confirmatory_rows(directory)))
 end
 
 function merge_confirmatory(directory)
@@ -661,7 +415,7 @@ function merge_confirmatory(directory)
     rows = collect_confirmatory_rows(directory)
     summary = report(directory, rows)
     summary.status == "COMPLETE" || error(
-        "Phase 18 merge requires all 30 fixed-step signed rows; found $(length(rows)). Run both shards first.")
+        "Phase 18 merge requires all 30 fixed-step rows; found $(length(rows)).")
     println("method/budget\tmean OOD loss\tmean seconds\tperturbed searches")
     for (name, aggregate) in sort(collect(summary.aggregates); by = first)
         println("$(name)\t$(aggregate.mean_ood_loss)\t$(aggregate.mean_seconds)\t" *
@@ -680,29 +434,13 @@ function main()
     # Avoid nested BLAS pools around independent solver/sample work.
     BLAS.set_num_threads(1)
     profile == :smoke && return smoke(directory)
-    profile == :preflight && return preflight(directory)
-    profile == :tune && return tune(directory)
     profile == :prepare && return prepare(directory)
-    if profile == :pilot
-        selected = tune(directory)
-        return pilot(directory, selected)
-    end
-    profile == :confirm_a && return confirmatory_shard(directory,
-        PHASE18_CONFIRM_A_SEEDS, "PHASE18_EXTERNAL_CONFIRM_A=COMPLETE")
-    profile == :confirm_b && return confirmatory_shard(directory,
-        PHASE18_CONFIRM_B_SEEDS, "PHASE18_EXTERNAL_CONFIRM_B=COMPLETE")
     if profile == :confirm_seed
         seed = parse(Int, get(ENV, "SAGE_PHASE18_SEED", "0"))
-        seed in PHASE18_CONFIRMATORY_SEEDS || error(
-            "SAGE_PHASE18_SEED must be one registered seed in 11:15.")
-        return confirmatory_shard(directory, [seed],
-            "PHASE18_EXTERNAL_CONFIRM_SEED=COMPLETE";
-            deferred_report = true, allow_thread_change = true)
+        return confirmatory_seed(directory, seed)
     end
     profile == :merge && return merge_confirmatory(directory)
-    profile == :confirmatory && error(
-        "The one-session confirmatory profile is disabled. Run prepare, confirm_a, confirm_b, then merge.")
-    error("SAGE_PHASE18_PROFILE must be smoke, preflight, tune, pilot, prepare, confirm_a, confirm_b, confirm_seed, or merge.")
+    error("SAGE_PHASE18_PROFILE must be smoke, prepare, confirm_seed, or merge.")
 end
 
 if abspath(PROGRAM_FILE) == abspath(@__FILE__)
