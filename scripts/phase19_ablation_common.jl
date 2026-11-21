@@ -339,6 +339,19 @@ function _cosine(left, right)
     return denominator <= eps(Float64) ? NaN : dot(left, right) / denominator
 end
 
+"""Mean of finite values, or `NaN` when a metric is undefined for every row."""
+function _finite_mean(values)
+    total = 0.0
+    count = 0
+    for value in values
+        if isfinite(value)
+            total += value
+            count += 1
+        end
+    end
+    return count == 0 ? NaN : total / count
+end
+
 """
 Run the complete registered ablation at one center. Isotropic variants share
 the exact same compact-q draws in every repetition; geometry variants use a
@@ -408,7 +421,10 @@ function ablate_task(
             trace_variance = sum(sum(abs2, deviation) for deviation in deviations) /
                 (length(deviations) - 1),
             rmse = sqrt(mean(sum(abs2, gradient - reference.gradient) for gradient in gradients)),
-            mean_cosine = mean(row.cosine for row in rows if isfinite(row.cosine)),
+            # A zero reference or estimate makes cosine undefined. This is a
+            # valid degenerate center, so retain its other metrics and report
+            # NaN rather than reducing an empty filtered generator.
+            mean_cosine = _finite_mean(row.cosine for row in rows),
             mean_seconds = mean(row.seconds for row in rows),
             mean_global_searches = mean(row.global_searches for row in rows),
             mean_branch_solves = mean(row.branch_solves for row in rows),

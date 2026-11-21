@@ -53,6 +53,9 @@ using Random
     @test length(audit.summaries) == length(P19.PHASE19_VARIANTS)
     @test all(isfinite(row.relative_bias) for row in audit.summaries)
     @test all(isfinite(row.rmse) for row in audit.summaries)
+    @test isnan(P19._finite_mean(Float64[]))
+    @test isnan(P19._finite_mean((NaN for _ in 1:3)))
+    @test P19._finite_mean([1.0, NaN, 3.0]) == 2.0
 
     # Regression for the accounting bug found while designing Phase 19: SAGE
     # lazy leaves are competitor solves, not a second set of complete QPs.

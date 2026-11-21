@@ -11,7 +11,7 @@ using .Phase10JobShop
 using .Phase18External
 using .Phase19Ablation
 
-const PHASE19_SCHEMA = 1
+const PHASE19_SCHEMA = 2
 
 function json(value)
     value === nothing && return "null"
@@ -115,6 +115,28 @@ function checkpoint_path(results, seed, label)
     return path
 end
 
+function cache_protocol(signature)
+    return (
+        seed = signature.seed,
+        checkpoint = signature.checkpoint,
+        checkpoint_hash = signature.checkpoint_hash,
+        index = signature.index,
+        radius = signature.radius,
+        repetitions = signature.repetitions,
+        reference_samples = signature.reference_samples,
+        estimator_samples = signature.estimator_samples,
+    )
+end
+
+function cache_is_compatible(previous, current)
+    previous == current && return true
+    # Schema 2 only changes the treatment of an all-undefined cosine summary.
+    # Completed schema-1 centers contain valid estimator outputs and may be
+    # resumed without recomputing them when every experimental field matches.
+    return previous.schema == 1 && current.schema == 2 &&
+        cache_protocol(previous) == cache_protocol(current)
+end
+
 function profile_config(profile)
     if profile == "smoke"
         return (
@@ -181,7 +203,7 @@ function aggregate_rows(task_rows)
             mean_relative_bias = mean(row.relative_bias for row in selected),
             mean_trace_variance = mean(row.trace_variance for row in selected),
             mean_rmse = mean(row.rmse for row in selected),
-            mean_cosine = mean(row.mean_cosine for row in selected),
+            mean_cosine = Phase19Ablation._finite_mean(row.mean_cosine for row in selected),
             mean_seconds = mean(row.mean_seconds for row in selected),
             mean_global_searches = mean(row.mean_global_searches for row in selected),
             mean_unique_branch_solves = mean(row.mean_branch_solves for row in selected),
@@ -224,7 +246,11 @@ function run_task(task, config, results, output, radius, source)
     )
     if isfile(cache)
         payload = deserialize(cache)
-        payload.signature == signature || error("Phase 19 center cache signature mismatch: $(cache)")
+        cache_is_compatible(payload.signature, signature) ||
+            error("Phase 19 center cache signature mismatch: $(cache)")
+        payload.signature == signature || println(
+            "[phase19-resume] accepted schema-1 center after metric-only NaN fix: $(cache)",
+        )
         println("[phase19-resume] seed=$(task.seed) checkpoint=$(task.checkpoint) index=$(task.index)")
         return payload.result
     end
